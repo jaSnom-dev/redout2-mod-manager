@@ -295,9 +295,49 @@ static void TestUi(string root)
             var apply = (Button)type.GetField("_applyOrder", flags)!.GetValue(window)!;
             var up = (Button)type.GetField("_moveUp", flags)!.GetValue(window)!;
             var down = (Button)type.GetField("_moveDown", flags)!.GetValue(window)!;
+            var detailsButton = (Button)type.GetField("_details", flags)!.GetValue(window)!;
+            var uninstallButton = (Button)type.GetField("_uninstall", flags)!.GetValue(window)!;
+            var content = (Grid)type.GetField("_content", flags)!.GetValue(window)!;
+            var header = (Grid)content.Children[0];
+            var links = (StackPanel)header.Children[1];
+            var listPanel = (Grid)content.Children[2];
+            var headers = (Grid)listPanel.Children[0];
+            Check(headers.Children.Cast<TextBlock>().Select(item => item.Text).SequenceEqual(
+                    new[] { "Mod List", "Status", "Potential Conflicts" }) &&
+                  links.Children.Count == 5 && !detailsButton.IsEnabled && !uninstallButton.IsEnabled,
+                "Windows-style headers and selection actions");
+            foreach (var width in new[] { 820d, 960d, 1280d })
+            {
+                window.Width = width;
+                Dispatcher.UIThread.RunJobs();
+                var heading = (Grid)header.Children[0];
+                var scanActions = (StackPanel)heading.Children[2];
+                var actions = (Grid)content.Children[3];
+                Check(heading.Bounds.Right <= links.Bounds.Left &&
+                      scanActions.Children.All(child => child.Bounds.Right <= scanActions.Bounds.Width) &&
+                      actions.Children.All(child => child.Bounds.Right <= actions.Bounds.Width) &&
+                      actions.Children.Cast<Button>().Max(button => button.Bounds.Width) -
+                      actions.Children.Cast<Button>().Min(button => button.Bounds.Width) <= 1,
+                    $"Windows-style controls fit at width {width}");
+            }
             checks["Beta.pak"].IsChecked = false;
-            var select = (RadioButton)((Grid)rows.Children[1]).Children[0];
+            var select = (RadioButton)((Grid)((Grid)rows.Children[1]).Children[0]).Children[0];
             select.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Check(detailsButton.IsEnabled && uninstallButton.IsEnabled, "selection enables details and uninstall");
+            detailsButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+            var detailsDialog = window.OwnedWindows.Single();
+            Check(((TextBlock)((ScrollViewer)((StackPanel)detailsDialog.Content!).Children[0]).Content!).Text!
+                .Contains("No asset paths"), "selected details remain available");
+            ((Button)((StackPanel)detailsDialog.Content!).Children[1]).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+            uninstallButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+            var uninstallDialog = window.OwnedWindows.Single();
+            var uninstallButtons = (StackPanel)((StackPanel)uninstallDialog.Content!).Children[1];
+            ((Button)uninstallButtons.Children[0]).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Dispatcher.UIThread.RunJobs();
+            Check(File.Exists(Path.Combine(paks, "Beta.pak")), "cancelling selected uninstall preserves the mod");
             up.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             checks = (Dictionary<string, CheckBox>)type.GetField("_checks", flags)!.GetValue(window)!;
             var order = (List<string>)type.GetField("_order", flags)!.GetValue(window)!;
@@ -358,10 +398,10 @@ static void TestUi(string root)
             tipWindow.Show();
             Dispatcher.UIThread.RunJobs();
             var tipRows = (StackPanel)type.GetField("_rows", flags)!.GetValue(tipWindow)!;
-            var tipSelect = (RadioButton)((Grid)tipRows.Children[0]).Children[0];
+            var tipSelect = (RadioButton)((Grid)((Grid)tipRows.Children[0]).Children[0]).Children[0];
             tipSelect.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             ((Button)type.GetField("_moveDown", flags)!.GetValue(tipWindow)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var tipConflicts = (TextBlock)((Grid)tipRows.Children[1]).Children[3];
+            var tipConflicts = (TextBlock)((Grid)tipRows.Children[1]).Children[2];
             Check(tipConflicts.Text == "1 file(s) with Beta.pak", "UI move rebuild keeps conflict text");
             ToolTip.SetIsOpen(tipConflicts, true);
             Dispatcher.UIThread.RunJobs();
