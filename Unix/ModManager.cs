@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -138,11 +139,7 @@ internal sealed partial class ModManager
         return entries;
     }
 
-    private static List<string> Normalize(IEnumerable<string> paths) => paths
-        .Select(PakAssetListReader.NormalizePath)
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-        .ToList();
+    private static List<string> Normalize(List<string> paths) => PakAssetListReader.NormalizeSortedPaths(paths);
 
     private static void WriteJson<T>(string path, T value)
     {
@@ -341,31 +338,90 @@ internal sealed partial class ModManager
     private string[] GetLoadOrderPaths(string name) =>
         [Path.Combine(_paksDirectory, name), GetDisabledPath(name), GetLegacyDisabledPath(name)];
 
-    private Dictionary<string, List<ModEntry>> GetAssetOwners()
+    private List<ModSnapshot> CaptureSnapshots(bool includeInactivePaths)
     {
-        var owners = new Dictionary<string, List<ModEntry>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var mod in _mods.Where(m => File.Exists(Path.Combine(_paksDirectory, m.FileName))))
+        var snapshots = new List<ModSnapshot>(_mods.Count);
+        foreach (var mod in _mods)
         {
-            if (!TryGetPaths(mod, out var paths))
+            var active = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
+            IReadOnlyList<string> paths = [];
+            var hasPaths = (active || includeInactivePaths) && TryGetPaths(mod, out paths);
+            snapshots.Add(new ModSnapshot(mod.FileName, mod.DisplayName, active, hasPaths, paths));
+        }
+        return snapshots;
+    }
+
+    // One point-in-time overlap index serves counts, details and the report so they cannot disagree.
+    private static OverlapIndex BuildOverlapIndex(IReadOnlyList<ModSnapshot> snapshots)
+    {
+        var capacity = 0;
+        foreach (var snapshot in snapshots)
+            if (snapshot.Active && snapshot.HasPaths)
+                capacity = Math.Max(capacity, snapshot.Paths.Count);
+
+        var firstOwners = new Dictionary<string, FirstPathOwner>(capacity, StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, SharedPathBuilder>? repeated = null;
+        var sequence = 0;
+        for (var index = 0; index < snapshots.Count; index++)
+        {
+            var snapshot = snapshots[index];
+            if (!snapshot.Active || !snapshot.HasPaths)
                 continue;
-            foreach (var path in paths)
+            var position = 0;
+            foreach (var path in snapshot.Paths)
             {
-                if (!owners.TryGetValue(path, out var list))
-                    owners.Add(path, list = []);
-                list.Add(mod);
+                ref var slot = ref CollectionsMarshal.GetValueRefOrAddDefault(firstOwners, path, out var exists);
+                if (!exists)
+                    slot = new FirstPathOwner(path, index, position, sequence++);
+                else
+                {
+                    repeated ??= new Dictionary<string, SharedPathBuilder>(StringComparer.OrdinalIgnoreCase);
+                    if (!repeated.TryGetValue(slot.Path, out var builder))
+                    {
+                        builder = new SharedPathBuilder(slot.Path, slot.Sequence);
+                        builder.Owners.Add(slot.Owner);
+                        builder.Positions.Add(slot.Position);
+                        repeated.Add(slot.Path, builder);
+                    }
+                    builder.Owners.Add(index);
+                    builder.Positions.Add(position);
+                }
+                position++;
             }
         }
-        return owners;
+
+        var shared = new List<SharedPath>(repeated?.Count ?? 0);
+        if (repeated is not null)
+        {
+            foreach (var builder in repeated.Values.OrderBy(builder => builder.Sequence))
+            {
+                var owners = builder.Owners.ToArray();
+                var byName = owners.OrderBy(owner => snapshots[owner].FileName, StringComparer.OrdinalIgnoreCase).ToArray();
+                shared.Add(new SharedPath(builder.Path, owners, builder.Positions.ToArray(), byName));
+            }
+        }
+
+        var byMod = new List<(int Position, int Shared)>?[snapshots.Count];
+        for (var s = 0; s < shared.Count; s++)
+        {
+            var item = shared[s];
+            for (var k = 0; k < item.Owners.Length; k++)
+                (byMod[item.Owners[k]] ??= []).Add((item.Positions[k], s));
+        }
+        return new OverlapIndex(snapshots, shared, byMod);
     }
 
     public IReadOnlyList<ModRow> GetRows()
     {
-        var owners = GetAssetOwners();
-        return _mods.OrderBy(m => m.DisplayName, StringComparer.OrdinalIgnoreCase).Select(mod =>
+        var snapshots = CaptureSnapshots(includeInactivePaths: true);
+        var overlaps = BuildOverlapIndex(snapshots);
+        return Enumerable.Range(0, snapshots.Count)
+            .OrderBy(i => snapshots[i].DisplayName, StringComparer.OrdinalIgnoreCase).Select(modIndex =>
         {
-            var active = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
-            var disabled = File.Exists(GetDisabledPath(mod.FileName));
-            var legacy = File.Exists(GetLegacyDisabledPath(mod.FileName));
+            var snapshot = snapshots[modIndex];
+            var active = snapshot.Active;
+            var disabled = File.Exists(GetDisabledPath(snapshot.FileName));
+            var legacy = File.Exists(GetLegacyDisabledPath(snapshot.FileName));
             var status = (active, disabled, legacy) switch
             {
                 (true, false, false) => "Enabled",
@@ -373,67 +429,70 @@ internal sealed partial class ModManager
                 (false, false, true) => "Disabled (legacy)",
                 _ => "Missing / conflict"
             };
-            var hasPaths = TryGetPaths(mod, out var paths);
-            var overlaps = active && hasPaths
-                ? paths.Where(p => owners.TryGetValue(p, out var list) && list.Count > 1)
-                    .Select(p => (Path: p, Others: owners[p].Where(m => m != mod)
-                        .Select(m => m.FileName).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList()))
-                    .ToList()
-                : [];
-            var counts = overlaps.SelectMany(overlap => overlap.Others)
-                .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
-                .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(group => $"{group.Count()} file(s) with {group.Key}");
+            var hasPaths = snapshot.HasPaths;
+            var paths = snapshot.Paths;
+            var fileName = snapshot.FileName;
+            var entries = overlaps.ByMod[modIndex];
+            var overlapCount = entries?.Count ?? 0;
+            var otherCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (entries is not null)
+            {
+                foreach (var (_, sharedIndex) in entries)
+                    foreach (var other in overlaps.Shared[sharedIndex].OwnersByName)
+                        if (other != modIndex)
+                        {
+                            ref var count = ref CollectionsMarshal.GetValueRefOrAddDefault(
+                                otherCounts, snapshots[other].FileName, out _);
+                            count++;
+                        }
+            }
+            var counts = otherCounts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => $"{pair.Value} file(s) with {pair.Key}");
             var conflicts = !hasPaths ? "Not scanned" : !active ? "Inactive" :
-                paths.Count == 0 ? "No assets" : overlaps.Count == 0 ? "None" : string.Join("; ", counts);
-            var details = !hasPaths ? "No asset paths are available. Scan the PAK or provide a .pak.list file." :
+                paths.Count == 0 ? "No assets" : overlapCount == 0 ? "None" : string.Join("; ", counts);
+            // Full overlap text can be very large, so it is built only when requested for this row snapshot.
+            var details = new Lazy<string>(() => !hasPaths ? "No asset paths are available. Scan the PAK or provide a .pak.list file." :
                 !active ? "This mod is disabled and excluded from conflict detection." :
-                overlaps.Count == 0 ? "No known overlaps with enabled, managed mods." :
-                string.Join(Environment.NewLine, overlaps.Select(overlap =>
-                    $"{overlap.Path} (also in {string.Join(", ", overlap.Others)})"));
-            return new ModRow(mod.FileName, mod.DisplayName, active, status, conflicts, details, overlaps.Count > 0);
+                overlapCount == 0 ? "No known overlaps with enabled, managed mods." :
+                string.Join(Environment.NewLine, entries!.OrderBy(entry => entry.Position).Select(entry =>
+                    $"{paths[entry.Position]} (also in {string.Join(", ", overlaps.OtherOwnerNames(entry.Shared, modIndex))})")));
+            return new ModRow(fileName, snapshot.DisplayName, active, status, conflicts, details, overlapCount > 0);
         }).ToList();
     }
 
     public string BuildConflictList()
     {
         RequireGame();
-        var owners = GetAssetOwners();
+        var snapshots = CaptureSnapshots(includeInactivePaths: false);
+        var overlaps = BuildOverlapIndex(snapshots);
         var report = new StringBuilder();
         report.AppendLine("Potential overlaps between enabled, managed archives.");
         report.AppendLine("This reflects applied file states, not pending checkbox changes. Load order is not inferred.");
         report.AppendLine();
-        var conflicts = owners.Where(pair => pair.Value.Count > 1)
-            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).ToList();
-        if (conflicts.Count == 0)
+        if (overlaps.Shared.Count == 0)
             report.AppendLine("No known asset-path overlaps.");
         else
         {
-            var byArchive = new Dictionary<ModEntry, List<KeyValuePair<string, List<ModEntry>>>>();
-            foreach (var entry in conflicts)
+            var byArchive = new List<int>?[snapshots.Count];
+            foreach (var sharedIndex in Enumerable.Range(0, overlaps.Shared.Count)
+                .OrderBy(i => overlaps.Shared[i].Path, StringComparer.OrdinalIgnoreCase))
+                foreach (var owner in overlaps.Shared[sharedIndex].Owners)
+                    (byArchive[owner] ??= []).Add(sharedIndex);
+            foreach (var modIndex in Enumerable.Range(0, snapshots.Count).Where(i => byArchive[i] is not null)
+                .OrderBy(i => snapshots[i].FileName, StringComparer.OrdinalIgnoreCase))
             {
-                foreach (var owner in entry.Value)
+                report.Append("Archive: ").AppendLine(snapshots[modIndex].FileName);
+                foreach (var sharedIndex in byArchive[modIndex]!)
                 {
-                    if (!byArchive.TryGetValue(owner, out var entries))
-                        byArchive.Add(owner, entries = []);
-                    entries.Add(entry);
-                }
-            }
-            foreach (var (mod, entries) in byArchive.OrderBy(pair => pair.Key.FileName, StringComparer.OrdinalIgnoreCase))
-            {
-                report.AppendLine($"Archive: {mod.FileName}");
-                foreach (var entry in entries)
-                {
-                    var others = entry.Value.Where(other => other != mod).Select(other => other.FileName)
-                        .OrderBy(name => name, StringComparer.OrdinalIgnoreCase);
-                    report.AppendLine($"  {entry.Key}");
-                    report.AppendLine($"    Conflicts with: {string.Join(", ", others)}");
+                    report.Append("  ").AppendLine(overlaps.Shared[sharedIndex].Path);
+                    report.Append("    Conflicts with: ")
+                        .AppendJoin(", ", overlaps.OtherOwnerNames(sharedIndex, modIndex)).AppendLine();
                 }
                 report.AppendLine();
             }
         }
-        var unscanned = _mods.Where(mod => File.Exists(Path.Combine(_paksDirectory, mod.FileName)) &&
-                !TryGetPaths(mod, out _)).Select(mod => mod.FileName)
+        var unscanned = snapshots.Where(snapshot => snapshot.Active && !snapshot.HasPaths)
+            .Select(snapshot => snapshot.FileName)
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
         if (unscanned.Count > 0)
         {
@@ -536,6 +595,25 @@ internal sealed partial class ModManager
     {
         public string GameDirectory { get; set; } = "";
     }
+    private readonly record struct ModSnapshot(string FileName, string DisplayName, bool Active, bool HasPaths, IReadOnlyList<string> Paths);
+    private readonly record struct FirstPathOwner(string Path, int Owner, int Position, int Sequence);
+    private sealed record SharedPathBuilder(string Path, int Sequence)
+    {
+        public List<int> Owners { get; } = [];
+        public List<int> Positions { get; } = [];
+    }
+    private sealed record SharedPath(string Path, int[] Owners, int[] Positions, int[] OwnersByName);
+    private sealed class OverlapIndex(IReadOnlyList<ModSnapshot> snapshots, List<SharedPath> shared,
+        List<(int Position, int Shared)>?[] byMod)
+    {
+        public List<SharedPath> Shared { get; } = shared;
+        // Per owner, one entry per listed path (position in that mod's own path list); only enabled, overlapping mods have entries.
+        public List<(int Position, int Shared)>?[] ByMod { get; } = byMod;
+
+        public IEnumerable<string> OtherOwnerNames(int sharedIndex, int modIndex) =>
+            Shared[sharedIndex].OwnersByName.Where(other => other != modIndex).Select(other => snapshots[other].FileName);
+    }
+
     private sealed class ModEntry
     {
         public string FileName { get; set; } = "";
@@ -557,4 +635,14 @@ internal sealed partial class ModManager
     }
 }
 
-internal sealed record ModRow(string FileName, string DisplayName, bool Enabled, string Status, string Conflicts, string Details, bool HasConflicts);
+internal sealed class ModRow(string fileName, string displayName, bool enabled, string status, string conflicts,
+    Lazy<string> details, bool hasConflicts)
+{
+    public string FileName { get; } = fileName;
+    public string DisplayName { get; } = displayName;
+    public bool Enabled { get; } = enabled;
+    public string Status { get; } = status;
+    public string Conflicts { get; } = conflicts;
+    public string Details => details.Value;
+    public bool HasConflicts { get; } = hasConflicts;
+}

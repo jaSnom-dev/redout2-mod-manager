@@ -232,11 +232,15 @@ internal sealed class MainWindow : Window
 
     private void RefreshRows(IReadOnlyDictionary<string, bool>? stateOverrides = null)
     {
+        RebuildRows(stateOverrides, _manager.GetRows());
+    }
+
+    private void RebuildRows(IReadOnlyDictionary<string, bool>? stateOverrides, IReadOnlyList<ModRow> rows)
+    {
         var previousChecks = _checks.ToDictionary(pair => pair.Key, pair => pair.Value.IsChecked == true,
             StringComparer.OrdinalIgnoreCase);
         if (stateOverrides is not null)
             foreach (var (name, enabled) in stateOverrides) previousChecks[name] = enabled;
-        var rows = _manager.GetRows();
         var byName = rows.ToDictionary(row => row.FileName, StringComparer.OrdinalIgnoreCase);
         if (_loadOrderPending)
         {
@@ -286,7 +290,7 @@ internal sealed class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
                 Foreground = row.HasConflicts ? Brushes.Orange : Foreground
             };
-            ToolTip.SetTip(conflicts, row.Details);
+            ToolTip.SetTip(conflicts, row.HasConflicts ? new LazyText(() => row.Details) : row.Details);
             Grid.SetColumn(conflicts, 3);
             panel.Children.Add(conflicts);
             var details = MakeButton("Details", async () => await ShowMessage(row.Details));
@@ -321,8 +325,9 @@ internal sealed class MainWindow : Window
         var target = index + direction;
         if (index < 0 || target < 0 || target >= _order.Count) return;
         (_order[index], _order[target]) = (_order[target], _order[index]);
-        _loadOrderPending = !_order.SequenceEqual(_manager.GetRows().Select(row => row.FileName), StringComparer.OrdinalIgnoreCase);
-        RefreshRows();
+        var rows = _manager.GetRows();
+        _loadOrderPending = !_order.SequenceEqual(rows.Select(row => row.FileName), StringComparer.OrdinalIgnoreCase);
+        RebuildRows(null, rows);
         SetStatus(_loadOrderPending ? "Order staged; use Apply Load Order to rename the files." : "Mod order unchanged.");
     }
 
@@ -440,4 +445,9 @@ internal sealed class MainWindow : Window
             }
         }
     };
+
+    private sealed class LazyText(Func<string> text)
+    {
+        public override string ToString() => text();
+    }
 }
