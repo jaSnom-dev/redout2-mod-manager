@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Redout2ModManager</AssemblyName>
-    <Version>1.0.7</Version>
+    <Version>1.1.0</Version>
     <RootNamespace>Redout2ModManager</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
