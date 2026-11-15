@@ -8,7 +8,10 @@ The manager searches Steam's registered libraries and selects Redout 2 automatic
 when found. Use Browse... only if it cannot detect the installation. You can choose
 the game root, its redout2 or Content subfolder, or the Content\Paks folder itself.
 Use Import Mods to import .pak or .pak.disabled files, or ZIP archives containing
-one .pak file and an optional matching .sig. A .pak.disabled file can include a
+one or more .pak files and optional matching .sig files beside each PAK in the ZIP.
+PAKs in ZIP subfolders are installed directly into the game's Paks folder.
+Duplicate PAK filenames or conflicts with existing mods reject the whole ZIP.
+A .pak.disabled file can include a
 matching .sig.disabled file. Existing PAKs can be registered through the same
 button. You can also drag and drop these files onto the window.
 External PAKs are copied into the game folder, leaving the source files untouched.
