@@ -8,21 +8,30 @@ Action buttons use equal-width columns, consistent heights and spacing, and an a
 ## Features
 
 - Import `.pak` files and `.pak.disabled` files (with matching `.sig` or `.sig.disabled` files), or ZIP mod packs containing any mix of these files. Each PAK's optional matching signature is taken from the same archive folder. Disabled files stay disabled on import and appear unchecked with a **Disabled** status. Existing PAKs in the game's folder can be registered through the same **Import Mods...** button.
+- Detect potential asset overlaps between enabled, managed mods using either a direct PAK index scan or an optional `.pak.list` manifest. The conflict column shows the number of overlapping asset paths, and its tooltip names the paths and other mods involved.
 - ZIP imports include PAKs in subfolders and install them directly into the game's Paks folder. Already-installed managed mods are skipped and counted without changing their files or enabled state, so the remaining mods can be imported. Duplicate PAK filenames within a ZIP or conflicts with unregistered files reject the whole ZIP without overwriting files; a failed import rolls back that ZIP's newly installed files and registrations.
 - Reimporting a managed PAK, loose or inside a ZIP, restores it if its game-folder copy is missing, preserving the imported file's enabled/disabled state; already-installed managed PAKs are left unchanged.
 - Drag and drop PAK files or ZIP archives onto the window to import them. External PAKs are copied into the game folder; source files are left untouched.
 - Check mods individually or use **Toggle All** to check all mods, or uncheck them when all are checked, then use **Apply Changes** to toggle their enabled state. Disabling renames files in place to `.pak.disabled` and `.sig.disabled`; enabling restores their original names.
 - Refresh the managed list and file statuses with **Refresh Mod List**. It removes entries whose enabled and disabled PAK files are both gone. Imports are added automatically; arbitrary game PAK files are not auto-registered.
 - Recognize mods disabled by previous versions in `%LOCALAPPDATA%\Redout2ModManager` and restore them to the game folder when enabled.
-- Uninstall registered mods, open the game Paks folder (including disabled files) with **Mod Folder**, open the Redout 2 Nexus page, and launch the game through Steam.
+- Uninstall registered mods, open the game Paks folder (including disabled files) with **Mod Folder**, open the Redout 2 Nexus page, join the [official 34BigThings Discord](https://discord.com/invite/redout), and launch the game through Steam.
 - Remember the selected game folder and each installation's managed mod list.
-- Show the Nexus Mods, GameBanana, and Redout 2 icons on their matching buttons; all are embedded in the executable.
+- Show the Nexus Mods, GameBanana, Discord, and Redout 2 icons on their matching buttons; all are embedded in the executable.
 
-Button image credits: [Nexus Mods logo (Wikimedia Commons)](https://commons.wikimedia.org/wiki/File:Nexus_Mods_Logo.svg), the GameBanana favicon from [gamebanana.com](https://gamebanana.com), and the [Redout 2 Steam community icon](https://shared.akamai.steamstatic.com/community_assets/images/apps/1799930/f048130cc434edb7d97f1eedb877c0a079ea2dff.jpg).
+Button image credits: [Nexus Mods logo (Wikimedia Commons)](https://commons.wikimedia.org/wiki/File:Nexus_Mods_Logo.svg), the GameBanana favicon from [gamebanana.com](https://gamebanana.com), the [Redout 2 Steam community icon](https://shared.akamai.steamstatic.com/community_assets/images/apps/1799930/f048130cc434edb7d97f1eedb877c0a079ea2dff.jpg), and the [Discord logo from Discord's brand assets](https://discord.com/branding?lang=en).
 
 The manager intentionally does not guess which PAK files are game files and which are mods. It never automatically registers or changes the game's existing PAKs. Use **Import Mods...** to import or register files you know are mods.
 Newly disabled mods stay beside the active PAK files with a `.disabled` suffix, which keeps disabling to a same-folder rename and makes the disabled files easy to inspect. The **Mod Folder** button opens that folder. Existing disabled mods from older releases remain recognized in their previous Local AppData location and are moved into the Paks folder when enabled.
 The rename approach assumes the game's PAK loader only loads files ending in `.pak`; confirm that behavior in-game with a harmless mod before relying on it.
+
+### Potential asset conflicts
+
+Click **Scan PAKs** to read the indexes of registered mod archives directly; the manager does not extract their contents. Scans run in the background, and results are saved in the manager's mod manifest. The scanner accepts indexes up to 64 MB and archives with up to 100,000 paths; encrypted or unsupported PAKs are reported instead of being treated as conflict-free. Scan results are reused only while the PAK's size and modification time match the scanned file.
+
+Alternatively, place a UTF-8 text file named `ModName.pak.list` beside `ModName.pak`, or in the same folder as the PAK inside an imported ZIP. List one relative path per line, for example `Content/Vehicles/Car.uasset`; blank lines and lines beginning with `#` are ignored. The manager stores this metadata in its own mod manifest and does not copy the `.pak.list` file into the game folder or require the game loader to read it. Mods with neither a list nor a successful scan are shown as **Not scanned**.
+
+The manager reports possible overlaps only among enabled, managed mods; it does not scan the game's base PAKs or arbitrary unregistered archives. These are warnings, not proof of a runtime conflict: matching paths may be intentional, and the manager does not determine which mod takes precedence. It also does not rename PAKs to change load order. Direct PAK parsing is provided by [CUE4Parse](https://github.com/FabianFG/CUE4Parse), licensed under Apache-2.0.
 
 ### DML LogicMods
 
@@ -42,7 +51,7 @@ The manager searches Steam's registered library folders for Redout 2 on startup 
 
 Requires the .NET 10 SDK on Windows:
 
-The `<Version>` in [Redout2ModManager.csproj](./Redout2ModManager.csproj) controls the displayed version and executable metadata. Update it for each release, or override it when publishing with `/p:Version=1.0.6`.
+The `<Version>` in [Redout2ModManager.csproj](./Redout2ModManager.csproj) controls the displayed version and executable metadata. Update it for each release, or override it when publishing with `/p:Version=1.0.7`.
 
 ```powershell
 dotnet publish Redout2ModManager.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true /p:DebugType=none -o publish-compressed

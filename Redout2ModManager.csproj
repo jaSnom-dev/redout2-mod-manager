@@ -6,12 +6,15 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Redout2ModManager</AssemblyName>
-    <Version>1.0.6</Version>
+    <Version>1.0.7</Version>
     <RootNamespace>Redout2ModManager</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="CUE4Parse" Version="1.2.2.202611" />
+    <PackageReference Include="Microsoft.Bcl.Memory" Version="9.0.14" />
     <EmbeddedResource Include="Assets\nexus-mods.png" LogicalName="Redout2ModManager.Assets.nexus-mods.png" />
     <EmbeddedResource Include="Assets\redout2-steam.jpg" LogicalName="Redout2ModManager.Assets.redout2-steam.jpg" />
     <EmbeddedResource Include="Assets\gamebanana.png" LogicalName="Redout2ModManager.Assets.gamebanana.png" />
+    <EmbeddedResource Include="Assets\discord-icon.png" LogicalName="Redout2ModManager.Assets.discord-icon.png" />
   </ItemGroup>
 </Project>

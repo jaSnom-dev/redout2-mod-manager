@@ -23,6 +23,8 @@ internal sealed class MainForm : Form
     private const string SteamLaunchUri = "steam://rungameid/1799930";
     private const string NexusPage = "https://www.nexusmods.com/redout2";
     private const string GameBananaPage = "https://gamebanana.com/games/24088";
+    private const string DiscordPage = "https://discord.com/invite/redout";
+    private const int HeaderButtonGap = 4;
 
     private readonly string _settingsDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -30,6 +32,7 @@ internal sealed class MainForm : Form
     private readonly TextBox _gamePathBox = new();
     private readonly ListView _modList = new();
     private readonly Label _statusLabel = new();
+    private readonly Button _scanPaksButton;
     private readonly Button _applyChangesButton;
     private readonly Button _removeButton;
     private readonly List<ModEntry> _mods = [];
@@ -61,8 +64,10 @@ internal sealed class MainForm : Form
         _modList.BorderStyle = BorderStyle.FixedSingle;
         _modList.Dock = DockStyle.Fill;
         _modList.OwnerDraw = true;
+        _modList.ShowItemToolTips = true;
         _modList.Columns.Add("Mod List", 260);
-        _modList.Columns.Add("STATUS", 150);
+        _modList.Columns.Add("Status", 150);
+        _modList.Columns.Add("Potential Conflicts", 200);
         _modList.DrawColumnHeader += (_, e) =>
         {
             using var background = new SolidBrush(ButtonColor);
@@ -154,6 +159,10 @@ internal sealed class MainForm : Form
             AutoEllipsis = true
         };
         header.Controls.Add(subtitle);
+        _scanPaksButton = CreateButton("Scan PAKs", ScanPakArchives);
+        _scanPaksButton.Location = new Point(24, 96);
+        _scanPaksButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        header.Controls.Add(_scanPaksButton);
 
         var nexusButton = CreateButton("Nexus Mods", OpenNexusPage);
         nexusButton.Image = LoadButtonIcon(
@@ -175,7 +184,7 @@ internal sealed class MainForm : Form
         gameBananaButton.TextImageRelation = TextImageRelation.ImageBeforeText;
         gameBananaButton.Padding = new Padding(12, 0, 0, 0);
         gameBananaButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        gameBananaButton.Location = new Point(Width - 190, 56);
+        gameBananaButton.Location = new Point(Width - 190, nexusButton.Bottom + HeaderButtonGap);
         header.Controls.Add(gameBananaButton);
 
         var startButton = CreateButton("Start Game", StartGame);
@@ -186,12 +195,25 @@ internal sealed class MainForm : Form
         startButton.TextImageRelation = TextImageRelation.ImageBeforeText;
         startButton.Padding = new Padding(12, 0, 0, 0);
         startButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        startButton.Location = new Point(Width - 190, 96);
+        startButton.Location = new Point(Width - 190, gameBananaButton.Bottom + HeaderButtonGap);
         startButton.BackColor = AccentColor;
         startButton.ForeColor = TextColor;
         startButton.FlatAppearance.BorderSize = 0;
         startButton.FlatAppearance.MouseOverBackColor = AccentHoverColor;
         header.Controls.Add(startButton);
+
+        var discordButton = CreateButton("Discord", () => OpenUrl(DiscordPage));
+        discordButton.Image = LoadButtonIcon(
+            "Redout2ModManager.Assets.discord-icon.png",
+            new Size(22, 22));
+        discordButton.ImageAlign = ContentAlignment.MiddleLeft;
+        discordButton.TextImageRelation = TextImageRelation.ImageBeforeText;
+        discordButton.Padding = new Padding(12, 0, 0, 0);
+        discordButton.AccessibleName = "Join the official 34BigThings Discord server";
+        discordButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        discordButton.Location = new Point(Width - 190, startButton.Bottom + HeaderButtonGap);
+        header.Controls.Add(discordButton);
+
         var pathLabel = new Label
         {
             Text = "GAME FOLDER",
@@ -228,7 +250,7 @@ internal sealed class MainForm : Form
 
         var browseButton = CreateButton("Browse...", BrowseForGameFolder);
         browseButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        browseButton.Location = new Point(Width - 190, 160);
+        browseButton.Location = new Point(Width - 190, discordButton.Bottom + HeaderButtonGap);
         header.Controls.Add(browseButton);
         _statusLabel.ForeColor = MutedColor;
         _statusLabel.Location = new Point(24, 200);
@@ -239,6 +261,7 @@ internal sealed class MainForm : Form
         {
             nexusButton.Left = header.ClientSize.Width - nexusButton.Width - 24;
             gameBananaButton.Left = nexusButton.Left;
+            discordButton.Left = nexusButton.Left;
             startButton.Left = nexusButton.Left;
             browseButton.Left = nexusButton.Left;
             title.Width = Math.Max(0, nexusButton.Left - title.Left - 16);
@@ -257,6 +280,7 @@ internal sealed class MainForm : Form
         {
             nexusButton.Image?.Dispose();
             gameBananaButton.Image?.Dispose();
+            discordButton.Image?.Dispose();
             startButton.Image?.Dispose();
         };
     }
@@ -575,6 +599,19 @@ internal sealed class MainForm : Form
                 {
                     throw new InvalidDataException($"The saved mod list contains an invalid PAK name: {entry.FileName}");
                 }
+                entry.AssetPaths ??= [];
+                entry.AssetPaths = entry.AssetPaths
+                    .Select(PakAssetListReader.NormalizePath)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                entry.ScannedAssetPaths ??= [];
+                entry.ScannedAssetPaths = entry.ScannedAssetPaths
+                    .Select(PakAssetListReader.NormalizePath)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                entry.HasAssetList |= entry.AssetPaths.Count > 0;
                 if (_mods.Any(mod => mod.FileName.Equals(entry.FileName, StringComparison.OrdinalIgnoreCase)))
                 {
                     throw new InvalidDataException($"The saved mod list contains a duplicate PAK: {entry.FileName}");
@@ -705,7 +742,23 @@ internal sealed class MainForm : Form
 
         var filesToCopy = new List<(ZipArchiveEntry Entry, string Target)>();
         var newMods = new List<ModEntry>();
-        var restoredMods = new List<(ModEntry Mod, bool PreviousHasSignature, bool HasSignature, bool Enabled)>();
+        var restoredMods = new List<(
+            ModEntry Mod,
+            bool PreviousHasSignature,
+            bool HasSignature,
+            bool Enabled,
+            bool PreviousHasAssetList,
+            List<string> PreviousAssetPaths,
+            bool HasAssetList,
+            List<string> AssetPaths,
+            bool PreviousHasPakScan,
+            List<string> PreviousScannedAssetPaths,
+            long PreviousScannedPakLength,
+            long PreviousScannedPakLastWriteTimeUtcTicks,
+            bool HasPakScan,
+            List<string> ScannedAssetPaths,
+            long ScannedPakLength,
+            long ScannedPakLastWriteTimeUtcTicks)>();
         var alreadyManaged = 0;
         var fileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pakEntry in pakEntries)
@@ -737,13 +790,33 @@ internal sealed class MainForm : Form
                 EnsureNotRegisteredOrInstalled(fileName);
             }
 
+            var assetListEntry = FindAssetListEntry(archive, pakEntry, fileName);
+            var assetPaths = assetListEntry is null
+                ? null
+                : ReadPakAssetList(assetListEntry);
             var signatureEntry = FindSignatureEntry(archive, pakEntry, fileName);
             var signatureName = Path.ChangeExtension(fileName, ".sig");
             var signatureTarget = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
             if (managedMod is not null)
             {
                 var hasSignature = ValidateRestoredSignature(managedMod, isDisabledPak, signatureEntry is not null);
-                restoredMods.Add((managedMod, managedMod.HasSignature, hasSignature, !isDisabledPak));
+                restoredMods.Add((
+                    managedMod,
+                    managedMod.HasSignature,
+                    hasSignature,
+                    !isDisabledPak,
+                    managedMod.HasAssetList,
+                    managedMod.AssetPaths,
+                    assetPaths is null ? managedMod.HasAssetList : true,
+                    assetPaths ?? managedMod.AssetPaths,
+                    managedMod.HasPakScan,
+                    managedMod.ScannedAssetPaths,
+                    managedMod.ScannedPakLength,
+                    managedMod.ScannedPakLastWriteTimeUtcTicks,
+                    false,
+                    [],
+                    0,
+                    0));
             }
             else
             {
@@ -756,7 +829,9 @@ internal sealed class MainForm : Form
                 {
                     FileName = fileName,
                     DisplayName = Path.GetFileNameWithoutExtension(fileName),
-                    HasSignature = signatureEntry is not null
+                    HasSignature = signatureEntry is not null,
+                    HasAssetList = assetPaths is not null,
+                    AssetPaths = assetPaths ?? []
                 });
             }
             filesToCopy.Add((pakEntry, isDisabledPak ? GetDisabledPath(fileName) : Path.Combine(_paksDirectory, fileName)));
@@ -784,6 +859,12 @@ internal sealed class MainForm : Form
             foreach (var restoredMod in restoredMods)
             {
                 restoredMod.Mod.HasSignature = restoredMod.HasSignature;
+                restoredMod.Mod.HasAssetList = restoredMod.HasAssetList;
+                restoredMod.Mod.AssetPaths = restoredMod.AssetPaths;
+                restoredMod.Mod.HasPakScan = restoredMod.HasPakScan;
+                restoredMod.Mod.ScannedAssetPaths = restoredMod.ScannedAssetPaths;
+                restoredMod.Mod.ScannedPakLength = restoredMod.ScannedPakLength;
+                restoredMod.Mod.ScannedPakLastWriteTimeUtcTicks = restoredMod.ScannedPakLastWriteTimeUtcTicks;
             }
             SaveManifest();
         }
@@ -796,6 +877,12 @@ internal sealed class MainForm : Form
             foreach (var restoredMod in restoredMods)
             {
                 restoredMod.Mod.HasSignature = restoredMod.PreviousHasSignature;
+                restoredMod.Mod.HasAssetList = restoredMod.PreviousHasAssetList;
+                restoredMod.Mod.AssetPaths = restoredMod.PreviousAssetPaths;
+                restoredMod.Mod.HasPakScan = restoredMod.PreviousHasPakScan;
+                restoredMod.Mod.ScannedAssetPaths = restoredMod.PreviousScannedAssetPaths;
+                restoredMod.Mod.ScannedPakLength = restoredMod.PreviousScannedPakLength;
+                restoredMod.Mod.ScannedPakLastWriteTimeUtcTicks = restoredMod.PreviousScannedPakLastWriteTimeUtcTicks;
             }
             foreach (var path in createdFiles)
             {
@@ -843,6 +930,7 @@ internal sealed class MainForm : Form
         EnsureNotRegisteredOrInstalled(fileName);
         var sourceSignature = GetSourceSignaturePath(fullSourcePath, isDisabledPak);
         var hasSignature = File.Exists(sourceSignature);
+        var assetPaths = ReadPakAssetListFile(fullSourcePath);
         var targetPak = isDisabledPak ? GetDisabledPath(fileName) : Path.Combine(_paksDirectory, fileName);
         var signatureName = Path.ChangeExtension(fileName, ".sig");
         var targetSignature = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
@@ -863,7 +951,7 @@ internal sealed class MainForm : Form
                 copiedFiles.Add(targetSignature);
             }
 
-            AddManagedMod(fileName, hasSignature);
+            AddManagedMod(fileName, hasSignature, assetPaths);
             return true;
         }
         catch
@@ -932,6 +1020,7 @@ internal sealed class MainForm : Form
         var isDisabledPak = IsDisabledPakPath(sourcePath);
         var sourceSignature = GetSourceSignaturePath(sourcePath, isDisabledPak);
         var hasSourceSignature = File.Exists(sourceSignature);
+        var sourceAssetPaths = ReadPakAssetListFile(sourcePath);
         var targetPak = isDisabledPak ? GetDisabledPath(mod.FileName) : Path.Combine(_paksDirectory, mod.FileName);
         var signatureName = Path.ChangeExtension(mod.FileName, ".sig");
         var targetSignature = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
@@ -939,6 +1028,12 @@ internal sealed class MainForm : Form
 
         var copiedFiles = new List<string>();
         var previousHasSignature = mod.HasSignature;
+        var previousHasAssetList = mod.HasAssetList;
+        var previousAssetPaths = mod.AssetPaths;
+        var previousHasPakScan = mod.HasPakScan;
+        var previousScannedAssetPaths = mod.ScannedAssetPaths;
+        var previousScannedPakLength = mod.ScannedPakLength;
+        var previousScannedPakLastWriteTimeUtcTicks = mod.ScannedPakLastWriteTimeUtcTicks;
         try
         {
             File.Copy(sourcePath, targetPak, overwrite: false);
@@ -950,12 +1045,27 @@ internal sealed class MainForm : Form
             }
 
             mod.HasSignature = hasSignature;
+            if (sourceAssetPaths is not null)
+            {
+                mod.HasAssetList = true;
+                mod.AssetPaths = sourceAssetPaths;
+            }
+            mod.HasPakScan = false;
+            mod.ScannedAssetPaths = [];
+            mod.ScannedPakLength = 0;
+            mod.ScannedPakLastWriteTimeUtcTicks = 0;
             SaveManifest();
             return true;
         }
         catch
         {
             mod.HasSignature = previousHasSignature;
+            mod.HasAssetList = previousHasAssetList;
+            mod.AssetPaths = previousAssetPaths;
+            mod.HasPakScan = previousHasPakScan;
+            mod.ScannedAssetPaths = previousScannedAssetPaths;
+            mod.ScannedPakLength = previousScannedPakLength;
+            mod.ScannedPakLastWriteTimeUtcTicks = previousScannedPakLastWriteTimeUtcTicks;
             foreach (var path in copiedFiles)
             {
                 if (File.Exists(path))
@@ -965,6 +1075,41 @@ internal sealed class MainForm : Form
             }
             throw;
         }
+    }
+
+    private static ZipArchiveEntry? FindAssetListEntry(ZipArchive archive, ZipArchiveEntry pakEntry, string pakFileName)
+    {
+        var normalizedPath = pakEntry.FullName.Replace('\\', '/');
+        var directory = Path.GetDirectoryName(normalizedPath)?.Replace('\\', '/') ?? "";
+        var listName = pakFileName + ".list";
+        var fullListPath = string.IsNullOrEmpty(directory) ? listName : $"{directory}/{listName}";
+        var matches = archive.Entries.Where(entry =>
+            entry.FullName.Replace('\\', '/').Equals(fullListPath, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
+        if (matches.Count > 1)
+        {
+            throw new InvalidDataException($"The ZIP contains multiple asset lists for '{pakFileName}'.");
+        }
+        return matches.SingleOrDefault();
+    }
+
+    private static List<string> ReadPakAssetList(ZipArchiveEntry entry)
+    {
+        using var stream = entry.Open();
+        return PakAssetListReader.Read(stream, entry.Length);
+    }
+
+    private static List<string>? ReadPakAssetListFile(string pakPath)
+    {
+        var directory = Path.GetDirectoryName(pakPath)
+            ?? throw new InvalidDataException($"Could not determine the directory for '{pakPath}'.");
+        var listPath = Path.Combine(directory, GetPakFileName(pakPath) + ".list");
+        if (!File.Exists(listPath))
+        {
+            return null;
+        }
+
+        using var stream = File.OpenRead(listPath);
+        return PakAssetListReader.Read(stream, stream.Length);
     }
 
     private static ZipArchiveEntry? FindSignatureEntry(ZipArchive archive, ZipArchiveEntry pakEntry, string pakFileName)
@@ -1024,7 +1169,7 @@ internal sealed class MainForm : Form
         }
 
         var signaturePath = Path.Combine(_paksDirectory, Path.ChangeExtension(fileName, ".sig"));
-        AddManagedMod(fileName, File.Exists(signaturePath));
+        AddManagedMod(fileName, File.Exists(signaturePath), ReadPakAssetListFile(fullPath));
     }
 
     private void RegisterExistingDisabledPak(string fullPath, string fileName)
@@ -1045,16 +1190,18 @@ internal sealed class MainForm : Form
         }
 
         var signatureName = Path.ChangeExtension(fileName, ".sig");
-        AddManagedMod(fileName, File.Exists(GetDisabledPath(signatureName)));
+        AddManagedMod(fileName, File.Exists(GetDisabledPath(signatureName)), ReadPakAssetListFile(disabledPak));
     }
 
-    private void AddManagedMod(string fileName, bool hasSignature)
+    private void AddManagedMod(string fileName, bool hasSignature, List<string>? assetPaths)
     {
         var mod = new ModEntry
         {
             FileName = fileName,
             DisplayName = Path.GetFileNameWithoutExtension(fileName),
-            HasSignature = hasSignature
+            HasSignature = hasSignature,
+            HasAssetList = assetPaths is not null,
+            AssetPaths = assetPaths ?? []
         };
         _mods.Add(mod);
         try
@@ -1392,6 +1539,163 @@ internal sealed class MainForm : Form
         }
     }
 
+    private async void ScanPakArchives()
+    {
+        if (string.IsNullOrWhiteSpace(_paksDirectory) || !Directory.Exists(_paksDirectory))
+        {
+            SetStatus("Select a valid game Paks folder before scanning.");
+            return;
+        }
+
+        var targets = new List<PakScanTarget>();
+        var failures = new List<string>();
+        foreach (var mod in _mods)
+        {
+            try
+            {
+                var pakPath = GetManagedPakPath(mod);
+                if (pakPath is null)
+                {
+                    failures.Add($"{mod.FileName}: no installed PAK file was found.");
+                    continue;
+                }
+                targets.Add(new PakScanTarget(mod, pakPath));
+            }
+            catch (IOException ex)
+            {
+                failures.Add($"{mod.FileName}: {ex.Message}");
+            }
+        }
+
+        if (targets.Count == 0)
+        {
+            var message = failures.Count == 0
+                ? "No managed PAK files are available to scan."
+                : "No managed PAK files could be scanned:\r\n" + string.Join("\r\n", failures.Take(10));
+            SetStatus(message.Replace("\r\n", " "));
+            if (failures.Count > 0)
+            {
+                MessageBox.Show(this, message, "PAK scan", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            return;
+        }
+
+        _scanPaksButton.Enabled = false;
+        _scanPaksButton.Text = "Scanning...";
+        SetStatus($"Scanning {targets.Count} managed PAK(s); indexes are read without extracting files.");
+        try
+        {
+            var outcomes = await Task.Run(() => targets.Select(ScanPakArchive).ToList());
+            failures.AddRange(outcomes
+                .Where(outcome => outcome.Error is not null)
+                .Select(outcome => $"{outcome.Target.Mod.FileName}: {outcome.Error}"));
+            var successful = outcomes.Where(outcome => outcome.Error is null).ToList();
+            var currentSuccessful = successful
+                .Where(outcome => _mods.Contains(outcome.Target.Mod))
+                .ToList();
+            var previousScans = currentSuccessful.Select(outcome => (
+                outcome.Target.Mod,
+                outcome.Target.Mod.HasPakScan,
+                outcome.Target.Mod.ScannedAssetPaths,
+                outcome.Target.Mod.ScannedPakLength,
+                outcome.Target.Mod.ScannedPakLastWriteTimeUtcTicks)).ToList();
+            try
+            {
+                foreach (var outcome in currentSuccessful)
+                {
+                    outcome.Target.Mod.HasPakScan = true;
+                    outcome.Target.Mod.ScannedAssetPaths = outcome.AssetPaths!;
+                    outcome.Target.Mod.ScannedPakLength = outcome.PakLength;
+                    outcome.Target.Mod.ScannedPakLastWriteTimeUtcTicks = outcome.LastWriteTimeUtcTicks;
+                }
+                if (currentSuccessful.Count > 0)
+                {
+                    SaveManifest();
+                }
+            }
+            catch
+            {
+                foreach (var previous in previousScans)
+                {
+                    previous.Mod.HasPakScan = previous.HasPakScan;
+                    previous.Mod.ScannedAssetPaths = previous.ScannedAssetPaths;
+                    previous.Mod.ScannedPakLength = previous.ScannedPakLength;
+                    previous.Mod.ScannedPakLastWriteTimeUtcTicks = previous.ScannedPakLastWriteTimeUtcTicks;
+                }
+                throw;
+            }
+
+            RefreshModList(preserveDesiredStates: true);
+            var summary = currentSuccessful.Count == 0 && successful.Count > 0
+                ? "The mod list changed during scanning; run Scan PAKs again."
+                : $"Scanned {currentSuccessful.Count} managed PAK(s).";
+            if (failures.Count > 0)
+            {
+                summary += $" {failures.Count} PAK(s) could not be scanned; see details.";
+                var details = failures.Take(10).ToList();
+                if (failures.Count > details.Count)
+                {
+                    details.Add($"…and {failures.Count - details.Count} more.");
+                }
+                MessageBox.Show(
+                    this,
+                    summary + "\r\n\r\n" + string.Join("\r\n", details),
+                    "PAK scan completed with errors",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            SetStatus(summary);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not save PAK scan results.", ex);
+        }
+        finally
+        {
+            _scanPaksButton.Enabled = true;
+            _scanPaksButton.Text = "Scan PAKs";
+        }
+    }
+
+    private static PakScanOutcome ScanPakArchive(PakScanTarget target)
+    {
+        try
+        {
+            var before = new FileInfo(target.Path);
+            var length = before.Length;
+            var lastWriteTimeUtcTicks = before.LastWriteTimeUtc.Ticks;
+            var assetPaths = PakArchiveScanner.Scan(target.Path);
+            var after = new FileInfo(target.Path);
+            if (!after.Exists ||
+                after.Length != length ||
+                after.LastWriteTimeUtc.Ticks != lastWriteTimeUtcTicks)
+            {
+                throw new IOException("The PAK changed while it was being scanned; scan it again.");
+            }
+            return new PakScanOutcome(target, assetPaths, length, lastWriteTimeUtcTicks, null);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return new PakScanOutcome(target, null, 0, 0, ex.Message);
+        }
+    }
+
+    private string? GetManagedPakPath(ModEntry mod)
+    {
+        var paths = new[]
+        {
+            Path.Combine(_paksDirectory, mod.FileName),
+            GetDisabledPath(mod.FileName),
+            GetLegacyDisabledPath(mod.FileName)
+        };
+        var existingPaths = paths.Where(File.Exists).ToArray();
+        if (existingPaths.Length > 1)
+        {
+            throw new IOException("Enabled and disabled copies both exist; resolve the duplicate before scanning.");
+        }
+        return existingPaths.SingleOrDefault();
+    }
+
     private void RefreshModList(bool preserveDesiredStates = false, IReadOnlyDictionary<string, bool>? stateOverrides = null)
     {
         var desiredStates = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -1419,13 +1723,17 @@ internal sealed class MainForm : Form
         try
         {
             _modList.Items.Clear();
+            var potentialConflicts = AnalyzePotentialConflicts();
             foreach (var mod in _mods.OrderBy(mod => mod.DisplayName, StringComparer.OrdinalIgnoreCase))
             {
                 var item = new ListViewItem(mod.DisplayName) { Tag = mod.FileName };
+                var isActive = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
                 item.Checked = desiredStates.TryGetValue(mod.FileName, out var shouldBeEnabled)
                     ? shouldBeEnabled
-                    : File.Exists(Path.Combine(_paksDirectory, mod.FileName));
+                    : isActive;
                 item.SubItems.Add(GetModStatus(mod));
+                item.SubItems.Add(GetConflictText(mod, isActive, potentialConflicts));
+                item.ToolTipText = GetConflictTooltip(mod, isActive, potentialConflicts);
                 _modList.Items.Add(item);
             }
         }
@@ -1436,6 +1744,149 @@ internal sealed class MainForm : Form
         }
         ResizeLastColumn();
         UpdateSelectionButtons();
+    }
+
+    private Dictionary<string, List<PakAssetConflict>> AnalyzePotentialConflicts()
+    {
+        var assetsToMods = new Dictionary<string, List<ModEntry>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mod in _mods)
+        {
+            if (!File.Exists(Path.Combine(_paksDirectory, mod.FileName)) ||
+                !TryGetAssetPaths(mod, out var assetPaths))
+            {
+                continue;
+            }
+
+            foreach (var assetPath in assetPaths)
+            {
+                if (!assetsToMods.TryGetValue(assetPath, out var owners))
+                {
+                    owners = [];
+                    assetsToMods.Add(assetPath, owners);
+                }
+                owners.Add(mod);
+            }
+        }
+
+        var conflicts = new Dictionary<string, List<PakAssetConflict>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (assetPath, owners) in assetsToMods)
+        {
+            if (owners.Count < 2)
+            {
+                continue;
+            }
+
+            foreach (var owner in owners)
+            {
+                if (!conflicts.TryGetValue(owner.FileName, out var modConflicts))
+                {
+                    modConflicts = [];
+                    conflicts.Add(owner.FileName, modConflicts);
+                }
+                modConflicts.Add(new PakAssetConflict(
+                    assetPath,
+                    owners.Where(other => !ReferenceEquals(other, owner))
+                        .Select(other => other.DisplayName)
+                        .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                        .ToList()));
+            }
+        }
+
+        return conflicts;
+    }
+
+    private bool TryGetAssetPaths(ModEntry mod, out IReadOnlyList<string> assetPaths)
+    {
+        if (IsCurrentPakScan(mod))
+        {
+            assetPaths = mod.ScannedAssetPaths;
+            return true;
+        }
+        if (mod.HasAssetList)
+        {
+            assetPaths = mod.AssetPaths;
+            return true;
+        }
+        assetPaths = [];
+        return false;
+    }
+
+    private bool IsCurrentPakScan(ModEntry mod)
+    {
+        if (!mod.HasPakScan)
+        {
+            return false;
+        }
+
+        string? pakPath;
+        try
+        {
+            pakPath = GetManagedPakPath(mod);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        if (pakPath is null)
+        {
+            return false;
+        }
+        var file = new FileInfo(pakPath);
+        return file.Exists &&
+            file.Length == mod.ScannedPakLength &&
+            file.LastWriteTimeUtc.Ticks == mod.ScannedPakLastWriteTimeUtcTicks;
+    }
+
+    private string GetConflictText(ModEntry mod, bool isActive, IReadOnlyDictionary<string, List<PakAssetConflict>> conflicts)
+    {
+        if (!TryGetAssetPaths(mod, out var assetPaths))
+        {
+            return "Not scanned";
+        }
+        if (!isActive)
+        {
+            return "Inactive";
+        }
+        if (assetPaths.Count == 0)
+        {
+            return "No assets";
+        }
+        return conflicts.TryGetValue(mod.FileName, out var modConflicts)
+            ? $"{modConflicts.Count} asset(s)"
+            : "None";
+    }
+
+    private string GetConflictTooltip(
+        ModEntry mod,
+        bool isActive,
+        IReadOnlyDictionary<string, List<PakAssetConflict>> conflicts)
+    {
+        if (!TryGetAssetPaths(mod, out var assetPaths))
+        {
+            return "No asset paths are available. Click Scan PAKs or provide a matching .pak.list file.";
+        }
+        if (!isActive)
+        {
+            return "This mod is disabled and is excluded from the active-mod conflict scan.";
+        }
+        if (assetPaths.Count == 0)
+        {
+            return "The scanned PAK or .pak.list file contains no asset paths.";
+        }
+        if (!conflicts.TryGetValue(mod.FileName, out var modConflicts))
+        {
+            return "No asset-path overlaps were found with other enabled, managed mods that have scanned PAKs or .pak.list files.";
+        }
+
+        const int maximumDetails = 20;
+        var details = modConflicts.Take(maximumDetails)
+            .Select(conflict => $"{conflict.AssetPath} (also listed by {string.Join(", ", conflict.OtherMods)})")
+            .ToList();
+        if (modConflicts.Count > maximumDetails)
+        {
+            details.Add($"…and {modConflicts.Count - maximumDetails} more overlapping asset path(s).");
+        }
+        return "Potential overlaps; load precedence is not inferred:\r\n" + string.Join("\r\n", details);
     }
 
     private string GetModStatus(ModEntry mod)
@@ -1464,9 +1915,13 @@ internal sealed class MainForm : Form
         {
             return;
         }
+        var precedingColumnsWidth = _modList.Columns
+            .Cast<ColumnHeader>()
+            .Take(_modList.Columns.Count - 1)
+            .Sum(column => column.Width);
         _modList.Columns[^1].Width = Math.Max(
             140,
-            _modList.ClientSize.Width - _modList.Columns[0].Width - 6);
+            _modList.ClientSize.Width - precedingColumnsWidth - 6);
     }
 
     private void UpdateSelectionButtons()
@@ -1546,7 +2001,15 @@ internal sealed class MainForm : Form
         Path.GetExtension(fileName).Equals(".pak", StringComparison.OrdinalIgnoreCase) &&
         fileName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
 
-    private void SetStatus(string message) => _statusLabel.Text = message;
+    private void SetStatus(string message)
+    {
+        var affectedMods = AnalyzePotentialConflicts().Count;
+        if (affectedMods > 0)
+        {
+            message += $" Potential asset conflicts affect {affectedMods} enabled mod(s); see the conflict column.";
+        }
+        _statusLabel.Text = message;
+    }
 
     private void ShowError(string context, Exception ex)
     {
@@ -1569,5 +2032,20 @@ internal sealed class MainForm : Form
         public string FileName { get; set; } = "";
         public string DisplayName { get; set; } = "";
         public bool HasSignature { get; set; }
+        public bool HasAssetList { get; set; }
+        public List<string> AssetPaths { get; set; } = [];
+        public bool HasPakScan { get; set; }
+        public List<string> ScannedAssetPaths { get; set; } = [];
+        public long ScannedPakLength { get; set; }
+        public long ScannedPakLastWriteTimeUtcTicks { get; set; }
     }
+
+    private sealed record PakAssetConflict(string AssetPath, List<string> OtherMods);
+    private sealed record PakScanTarget(ModEntry Mod, string Path);
+    private sealed record PakScanOutcome(
+        PakScanTarget Target,
+        List<string>? AssetPaths,
+        long PakLength,
+        long LastWriteTimeUtcTicks,
+        string? Error);
 }
