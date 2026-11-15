@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Redout2ModManager.Unix</AssemblyName>
+    <RootNamespace>Redout2ModManager.Unix</RootNamespace>
+    <Version>1.0.7</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Tests\**\*.cs" />
+    <InternalsVisibleTo Include="Redout2ModManager.Unix.Tests" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.7" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.7" />
+    <PackageReference Include="CUE4Parse" Version="1.2.2.202611" />
+    <PackageReference Include="Microsoft.Bcl.Memory" Version="9.0.14" />
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
+    <Compile Include="..\PakArchiveScanner.cs" Link="PakArchiveScanner.cs" />
+    <Compile Include="..\PakAssetListReader.cs" Link="PakAssetListReader.cs" />
+    <EmbeddedResource Include="..\Assets\nexus-mods.png" LogicalName="Redout2ModManager.Assets.nexus-mods.png" />
+    <EmbeddedResource Include="..\Assets\redout2-steam.jpg" LogicalName="Redout2ModManager.Assets.redout2-steam.jpg" />
+    <EmbeddedResource Include="..\Assets\gamebanana.png" LogicalName="Redout2ModManager.Assets.gamebanana.png" />
+    <EmbeddedResource Include="..\Assets\discord-icon.png" LogicalName="Redout2ModManager.Assets.discord-icon.png" />
+  </ItemGroup>
+</Project>
