@@ -34,12 +34,14 @@ internal sealed class MainForm : Form
     private readonly Label _statusLabel = new();
     private readonly Button _scanPaksButton;
     private readonly Button _applyChangesButton;
+    private readonly Button _applyLoadOrderButton;
     private readonly Button _removeButton;
     private readonly List<ModEntry> _mods = [];
     private string _gameDirectory = "";
     private string _paksDirectory = "";
     private string _manifestPath = "";
     private bool _initializing;
+    private bool _loadOrderPending;
 
     public MainForm()
     {
@@ -134,6 +136,20 @@ internal sealed class MainForm : Form
             }
         };
 
+        var orderActions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 48,
+            Padding = new Padding(20, 4, 20, 4),
+            BackColor = BackgroundColor,
+            WrapContents = false
+        };
+        orderActions.Controls.Add(CreateButton("Move Up", () => MoveSelectedMod(-1)));
+        orderActions.Controls.Add(CreateButton("Move Down", () => MoveSelectedMod(1)));
+        _applyLoadOrderButton = CreateButton("Apply Load Order", ApplySelectedLoadOrder);
+        _applyLoadOrderButton.Enabled = false;
+        orderActions.Controls.Add(_applyLoadOrderButton);
+
         var header = new Panel
         {
             Dock = DockStyle.Top,
@@ -163,6 +179,10 @@ internal sealed class MainForm : Form
         _scanPaksButton.Location = new Point(24, 96);
         _scanPaksButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         header.Controls.Add(_scanPaksButton);
+        var conflictListButton = CreateButton("Conflict List", ShowConflictList);
+        conflictListButton.Location = new Point(_scanPaksButton.Right + 8, _scanPaksButton.Top);
+        conflictListButton.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+        header.Controls.Add(conflictListButton);
 
         var nexusButton = CreateButton("Nexus Mods", OpenNexusPage);
         nexusButton.Image = LoadButtonIcon(
@@ -272,6 +292,7 @@ internal sealed class MainForm : Form
 
         Controls.Add(_modList);
         Controls.Add(actions);
+        Controls.Add(orderActions);
         Controls.Add(header);
         EnableFileDrop(this);
 
@@ -545,6 +566,7 @@ internal sealed class MainForm : Form
         _manifestPath = Path.Combine(_settingsDirectory, $"{GetInstallKey(_paksDirectory)}-mods.json");
         _gamePathBox.Text = _gameDirectory;
         LoadManifest();
+        _loadOrderPending = false;
         RefreshModList();
         if (saveSettings)
         {
@@ -1352,6 +1374,231 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void MoveSelectedMod(int direction)
+    {
+        if (!EnsureGameSelected())
+        {
+            return;
+        }
+        if (_modList.SelectedItems.Count != 1)
+        {
+            SetStatus("Select one mod to change its order.");
+            return;
+        }
+
+        var selected = _modList.SelectedItems[0];
+        var targetIndex = selected.Index + direction;
+        if (targetIndex < 0 || targetIndex >= _modList.Items.Count)
+        {
+            return;
+        }
+        var wasChecked = selected.Checked;
+        _initializing = true;
+        try
+        {
+            _modList.Items.Remove(selected);
+            _modList.Items.Insert(targetIndex, selected);
+            selected.Checked = wasChecked;
+            selected.Selected = true;
+            selected.Focused = true;
+            selected.EnsureVisible();
+        }
+        finally { _initializing = false; }
+        _loadOrderPending = HasPendingLoadOrder();
+        UpdateSelectionButtons();
+        _modList.Focus();
+        SetStatus(_loadOrderPending ? "Order staged; use Apply Load Order to rename the files." : "Mod order unchanged.");
+    }
+
+    private void ApplySelectedLoadOrder()
+    {
+        if (!EnsureGameSelected() || !_loadOrderPending)
+        {
+            return;
+        }
+        if (!_scanPaksButton.Enabled)
+        {
+            SetStatus("Wait for the PAK scan to finish before applying the order.");
+            return;
+        }
+        var answer = MessageBox.Show(this,
+            "Applying this order renames all managed PAKs and their matching signatures with numbered prefixes. " +
+            "Existing numbered prefixes will be replaced. Game load precedence has not been verified, " +
+            "so the numbering may not control which mod wins. Continue?",
+            "Confirm mod renaming", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (answer != DialogResult.Yes)
+        {
+            return;
+        }
+        try
+        {
+            var items = _modList.Items.Cast<ListViewItem>().ToList();
+            var desiredStates = items.ToDictionary(item => (string)item.Tag!, item => item.Checked,
+                StringComparer.OrdinalIgnoreCase);
+            var selectedName = _modList.SelectedItems.Count == 1 ? (string)_modList.SelectedItems[0].Tag! : null;
+            var names = items.Select(item => (string)item.Tag!).ToList();
+            var renamed = ApplyLoadOrder(names);
+            var states = desiredStates.ToDictionary(pair => renamed[pair.Key], pair => pair.Value,
+                StringComparer.OrdinalIgnoreCase);
+            _loadOrderPending = false;
+            RefreshModList(stateOverrides: states);
+            if (selectedName is not null)
+            {
+                var movedItem = _modList.Items.Cast<ListViewItem>()
+                    .Single(item => string.Equals((string)item.Tag!, renamed[selectedName], StringComparison.OrdinalIgnoreCase));
+                movedItem.Selected = true;
+                movedItem.Focused = true;
+                movedItem.EnsureVisible();
+            }
+            _modList.Focus();
+            SetStatus("Renamed managed mods in the selected order. Game load precedence is unverified.");
+        }
+        catch (Exception ex)
+        {
+            RefreshModList(preserveDesiredStates: true);
+            ShowError("Could not apply the mod order.", ex);
+        }
+    }
+
+    private bool HasPendingLoadOrder() =>
+        !_modList.Items.Cast<ListViewItem>().Select(item => (string)item.Tag!)
+            .SequenceEqual(_mods.OrderBy(mod => mod.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .Select(mod => mod.FileName), StringComparer.OrdinalIgnoreCase);
+
+    private Dictionary<string, string> ApplyLoadOrder(IReadOnlyList<string> orderedNames)
+    {
+        if (orderedNames.Count != _mods.Count || orderedNames.Count > 999)
+        {
+            throw new InvalidOperationException("Reordering requires the complete mod list and supports at most 999 mods.");
+        }
+        var modsByName = _mods.ToDictionary(mod => mod.FileName, StringComparer.OrdinalIgnoreCase);
+        if (orderedNames.Distinct(StringComparer.OrdinalIgnoreCase).Count() != _mods.Count ||
+            orderedNames.Any(name => !modsByName.ContainsKey(name)))
+        {
+            throw new InvalidOperationException("The mod list changed; refresh it before changing order.");
+        }
+
+        var changes = orderedNames.Select((name, index) =>
+        {
+            var mod = modsByName[name];
+            var baseName = Regex.Replace(mod.FileName, @"^\d{3}_", "");
+            var newName = $"{index + 1:D3}_{baseName}";
+            if (!IsSafePakFileName(newName))
+            {
+                throw new InvalidDataException($"Invalid reordered PAK name: {newName}");
+            }
+            return (Mod: mod, OldName: mod.FileName, OldDisplay: mod.DisplayName, NewName: newName);
+        }).ToList();
+        if (changes.Select(change => change.NewName).Distinct(StringComparer.OrdinalIgnoreCase).Count() != changes.Count)
+        {
+            throw new IOException("The reordered mods would have duplicate filenames.");
+        }
+
+        var files = new List<LoadOrderFile>();
+        var sourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var change in changes)
+        {
+            var oldPakPaths = GetLoadOrderPaths(change.OldName);
+            var newPakPaths = GetLoadOrderPaths(change.NewName);
+            var present = Enumerable.Range(0, oldPakPaths.Length).Where(index => File.Exists(oldPakPaths[index])).ToArray();
+            if (present.Length != 1)
+            {
+                throw new IOException($"Cannot determine the state of '{change.OldName}'; resolve missing or duplicate files first.");
+            }
+            AddLoadOrderFile(files, sourcePaths, oldPakPaths[present[0]], newPakPaths[present[0]]);
+            if (change.Mod.HasSignature)
+            {
+                var oldSignatures = GetLoadOrderPaths(Path.ChangeExtension(change.OldName, ".sig"));
+                var newSignatures = GetLoadOrderPaths(Path.ChangeExtension(change.NewName, ".sig"));
+                if (!File.Exists(oldSignatures[present[0]]) ||
+                    oldSignatures.Where((_, index) => index != present[0]).Any(File.Exists))
+                {
+                    throw new IOException($"The matching signature for '{change.OldName}' is missing or has conflicting copies.");
+                }
+                AddLoadOrderFile(files, sourcePaths, oldSignatures[present[0]], newSignatures[present[0]]);
+            }
+        }
+        foreach (var change in changes)
+        {
+            var targets = GetLoadOrderPaths(change.NewName)
+                .Concat(GetLoadOrderPaths(Path.ChangeExtension(change.NewName, ".sig")));
+            foreach (var target in targets)
+            {
+                if ((File.Exists(target) || Directory.Exists(target)) && !sourcePaths.Contains(target))
+                {
+                    throw new IOException($"Refusing to overwrite an existing file or folder: {target}");
+                }
+            }
+        }
+
+        var moving = files.Where(file => !file.Source.Equals(file.Destination, StringComparison.OrdinalIgnoreCase)).ToList();
+        try
+        {
+            foreach (var file in moving)
+            {
+                File.Move(file.Source, file.Temporary);
+                file.Current = file.Temporary;
+            }
+            foreach (var file in moving)
+            {
+                File.Move(file.Temporary, file.Destination);
+                file.Current = file.Destination;
+            }
+            foreach (var change in changes)
+            {
+                change.Mod.FileName = change.NewName;
+                change.Mod.DisplayName = Path.GetFileNameWithoutExtension(change.NewName);
+            }
+            SaveManifest();
+        }
+        catch (Exception operationError)
+        {
+            foreach (var change in changes)
+            {
+                change.Mod.FileName = change.OldName;
+                change.Mod.DisplayName = change.OldDisplay;
+            }
+            var rollbackErrors = new List<Exception>();
+            foreach (var file in moving.Where(file => file.Current == file.Destination).Reverse())
+            {
+                try
+                {
+                    File.Move(file.Destination, file.Temporary);
+                    file.Current = file.Temporary;
+                }
+                catch (Exception ex) { rollbackErrors.Add(ex); }
+            }
+            foreach (var file in moving.Where(file => file.Current == file.Temporary).Reverse())
+            {
+                try
+                {
+                    File.Move(file.Temporary, file.Source);
+                    file.Current = file.Source;
+                }
+                catch (Exception ex) { rollbackErrors.Add(ex); }
+            }
+            if (rollbackErrors.Count > 0)
+            {
+                rollbackErrors.Insert(0, operationError);
+                throw new AggregateException("Changing the mod order failed and rollback was incomplete.", rollbackErrors);
+            }
+            throw;
+        }
+        return changes.ToDictionary(change => change.OldName, change => change.NewName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private string[] GetLoadOrderPaths(string name) =>
+        [Path.Combine(_paksDirectory, name), GetDisabledPath(name), GetLegacyDisabledPath(name)];
+
+    private static void AddLoadOrderFile(List<LoadOrderFile> files, HashSet<string> sources, string source, string destination)
+    {
+        if (!sources.Add(source))
+        {
+            throw new IOException($"Multiple mods refer to the same file: {source}");
+        }
+        files.Add(new LoadOrderFile(source, destination));
+    }
+
     private static void MoveManagedFile(string source, string destination)
     {
         if (string.Equals(Path.GetPathRoot(source), Path.GetPathRoot(destination), StringComparison.OrdinalIgnoreCase))
@@ -1698,6 +1945,10 @@ internal sealed class MainForm : Form
 
     private void RefreshModList(bool preserveDesiredStates = false, IReadOnlyDictionary<string, bool>? stateOverrides = null)
     {
+        var stagedOrder = _loadOrderPending
+            ? _modList.Items.Cast<ListViewItem>().Select((item, index) => (Name: (string)item.Tag!, Index: index))
+                .ToDictionary(item => item.Name, item => item.Index, StringComparer.OrdinalIgnoreCase)
+            : null;
         var desiredStates = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         if (preserveDesiredStates)
         {
@@ -1724,7 +1975,9 @@ internal sealed class MainForm : Form
         {
             _modList.Items.Clear();
             var potentialConflicts = AnalyzePotentialConflicts();
-            foreach (var mod in _mods.OrderBy(mod => mod.DisplayName, StringComparer.OrdinalIgnoreCase))
+            foreach (var mod in _mods
+                .OrderBy(mod => stagedOrder is not null && stagedOrder.TryGetValue(mod.FileName, out var index) ? index : int.MaxValue)
+                .ThenBy(mod => mod.DisplayName, StringComparer.OrdinalIgnoreCase))
             {
                 var item = new ListViewItem(mod.DisplayName) { Tag = mod.FileName };
                 var isActive = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
@@ -1733,6 +1986,11 @@ internal sealed class MainForm : Form
                     : isActive;
                 item.SubItems.Add(GetModStatus(mod));
                 item.SubItems.Add(GetConflictText(mod, isActive, potentialConflicts));
+                if (isActive && potentialConflicts.ContainsKey(mod.FileName))
+                {
+                    item.UseItemStyleForSubItems = false;
+                    item.SubItems[2].ForeColor = Color.Orange;
+                }
                 item.ToolTipText = GetConflictTooltip(mod, isActive, potentialConflicts);
                 _modList.Items.Add(item);
             }
@@ -1741,6 +1999,10 @@ internal sealed class MainForm : Form
         {
             _modList.EndUpdate();
             _initializing = false;
+        }
+        if (_loadOrderPending)
+        {
+            _loadOrderPending = HasPendingLoadOrder();
         }
         ResizeLastColumn();
         UpdateSelectionButtons();
@@ -1786,7 +2048,7 @@ internal sealed class MainForm : Form
                 modConflicts.Add(new PakAssetConflict(
                     assetPath,
                     owners.Where(other => !ReferenceEquals(other, owner))
-                        .Select(other => other.DisplayName)
+                        .Select(other => other.FileName)
                         .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
                         .ToList()));
             }
@@ -1851,9 +2113,16 @@ internal sealed class MainForm : Form
         {
             return "No assets";
         }
-        return conflicts.TryGetValue(mod.FileName, out var modConflicts)
-            ? $"{modConflicts.Count} asset(s)"
-            : "None";
+        if (!conflicts.TryGetValue(mod.FileName, out var modConflicts))
+        {
+            return "None";
+        }
+
+        return string.Join("; ", modConflicts
+            .SelectMany(conflict => conflict.OtherMods)
+            .GroupBy(archive => archive, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => $"{group.Count()} file(s) with {group.Key}"));
     }
 
     private string GetConflictTooltip(
@@ -1889,6 +2158,94 @@ internal sealed class MainForm : Form
         return "Potential overlaps; load precedence is not inferred:\r\n" + string.Join("\r\n", details);
     }
 
+    private void ShowConflictList()
+    {
+        if (!EnsureGameSelected())
+        {
+            return;
+        }
+
+        try
+        {
+            using var dialog = new Form
+            {
+                Text = "Potential archive conflicts",
+                StartPosition = FormStartPosition.CenterParent,
+                Size = new Size(850, 600),
+                MinimumSize = new Size(500, 300),
+                BackColor = BackgroundColor,
+                ForeColor = TextColor,
+                Font = Font,
+                ShowInTaskbar = false
+            };
+            var close = CreateButton("Close", dialog.Close);
+            close.Dock = DockStyle.Bottom;
+            var details = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Both,
+                WordWrap = false,
+                BackColor = PanelColor,
+                ForeColor = TextColor,
+                Text = BuildConflictList()
+            };
+            dialog.Controls.Add(details);
+            dialog.Controls.Add(close);
+            dialog.AcceptButton = close;
+            dialog.ShowDialog(this);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not display the conflict list.", ex);
+        }
+    }
+
+    private string BuildConflictList()
+    {
+        var conflicts = AnalyzePotentialConflicts();
+        var report = new StringBuilder();
+        report.AppendLine("Potential overlaps between enabled, managed archives.");
+        report.AppendLine("This reflects applied file states, not pending checkbox changes. Load order is not inferred.");
+        report.AppendLine();
+
+        if (conflicts.Count == 0)
+        {
+            report.AppendLine("No known asset-path overlaps.");
+        }
+        else
+        {
+            foreach (var (archive, entries) in conflicts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                report.AppendLine($"Archive: {archive}");
+                foreach (var conflict in entries.OrderBy(entry => entry.AssetPath, StringComparer.OrdinalIgnoreCase))
+                {
+                    report.AppendLine($"  {conflict.AssetPath}");
+                    report.AppendLine($"    Conflicts with: {string.Join(", ", conflict.OtherMods)}");
+                }
+                report.AppendLine();
+            }
+        }
+
+        var unscanned = _mods
+            .Where(mod => File.Exists(Path.Combine(_paksDirectory, mod.FileName)) &&
+                !TryGetAssetPaths(mod, out _))
+            .Select(mod => mod.FileName)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (unscanned.Count > 0)
+        {
+            report.AppendLine();
+            report.AppendLine("Not scanned (conflicts are unknown):");
+            foreach (var archive in unscanned)
+            {
+                report.AppendLine($"  {archive}");
+            }
+        }
+        return report.ToString();
+    }
+
     private string GetModStatus(ModEntry mod)
     {
         var isActive = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
@@ -1919,9 +2276,13 @@ internal sealed class MainForm : Form
             .Cast<ColumnHeader>()
             .Take(_modList.Columns.Count - 1)
             .Sum(column => column.Width);
+        var textWidth = _modList.Items.Cast<ListViewItem>()
+            .Select(item => TextRenderer.MeasureText(item.SubItems[2].Text, _modList.Font).Width + 16)
+            .DefaultIfEmpty(0)
+            .Max();
         _modList.Columns[^1].Width = Math.Max(
-            140,
-            _modList.ClientSize.Width - precedingColumnsWidth - 6);
+            Math.Max(140, _modList.ClientSize.Width - precedingColumnsWidth - 6),
+            Math.Min(textWidth, 4000));
     }
 
     private void UpdateSelectionButtons()
@@ -1931,6 +2292,7 @@ internal sealed class MainForm : Form
             return;
         }
         _applyChangesButton.Enabled = HasPendingChanges();
+        _applyLoadOrderButton.Enabled = _loadOrderPending;
         _removeButton.Enabled = _modList.SelectedItems.Count > 0;
     }
 
@@ -2041,6 +2403,13 @@ internal sealed class MainForm : Form
     }
 
     private sealed record PakAssetConflict(string AssetPath, List<string> OtherMods);
+    private sealed class LoadOrderFile(string source, string destination)
+    {
+        public string Source { get; } = source;
+        public string Destination { get; } = destination;
+        public string Temporary { get; } = Path.Combine(Path.GetDirectoryName(source)!, $".redout2-order-{Guid.NewGuid():N}.tmp");
+        public string Current { get; set; } = source;
+    }
     private sealed record PakScanTarget(ModEntry Mod, string Path);
     private sealed record PakScanOutcome(
         PakScanTarget Target,
