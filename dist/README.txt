@@ -12,13 +12,17 @@ one or more .pak or .pak.disabled files and optional matching .sig or
 .sig.disabled files beside each PAK in the ZIP. Disabled imports stay disabled
 and appear unchecked with a Disabled status, including in mixed ZIP mod packs.
 PAKs in ZIP subfolders are installed directly into the game's Paks folder.
-Duplicate PAK filenames or conflicts with existing mods reject the whole ZIP.
+Already-installed managed mods in ZIPs are skipped and counted without changing
+their files or enabled state; other mods in the pack can still be imported.
+Duplicate PAK filenames within a ZIP or conflicts with unregistered files reject
+the whole ZIP.
 A .pak.disabled file can include a
 matching .sig.disabled file. Existing PAKs can be registered through the same
 button. You can also drag and drop these files onto the window.
 External PAKs are copied into the game folder, leaving the source files untouched.
-Reimporting a managed PAK restores a missing game-folder copy; an installed or
-disabled managed mod is not overwritten.
+Reimporting a managed PAK, loose or inside a ZIP, restores a missing game-folder
+copy in the imported file's enabled/disabled state; an installed or disabled
+managed mod is not overwritten.
 The manager does not automatically register arbitrary game PAK files.
 
 Check mods to set their enabled state, then use Apply Changes. Disabling renames
