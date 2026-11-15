@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using System.Text;
@@ -39,7 +40,10 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Redout 2 Mod Manager";
+        var version = typeof(MainForm).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
+            ?? throw new InvalidOperationException("Application version metadata is missing.");
+        Text = $"Redout 2 Mod Manager v{version}";
         StartPosition = FormStartPosition.CenterScreen;
         Size = new Size(960, 680);
         MinimumSize = new Size(820, 560);
@@ -133,7 +137,7 @@ internal sealed class MainForm : Form
         };
         var title = new Label
         {
-            Text = "REDOUT 2 MOD MANAGER",
+            Text = $"REDOUT 2 MOD MANAGER v{version}",
             Font = new Font("Segoe UI", 18, FontStyle.Bold),
             ForeColor = TextColor,
             Location = new Point(24, 16),

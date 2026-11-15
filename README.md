@@ -1,6 +1,7 @@
 # Redout 2 Mod Manager
 
 A standalone Windows GUI for managing `.pak` mods in Redout 2.
+The header and window title show the build version so different executables are easy to identify.
 
 Action buttons use equal-width columns, consistent heights and spacing, and an aligned game-folder field that resizes with the window.
 
@@ -40,6 +41,8 @@ The manager searches Steam's registered library folders for Redout 2 on startup 
 ## Build / publish
 
 Requires the .NET 10 SDK on Windows:
+
+The `<Version>` in [Redout2ModManager.csproj](./Redout2ModManager.csproj) controls the displayed version and executable metadata. Update it for each release, or override it when publishing with `/p:Version=1.0.6`.
 
 ```powershell
 dotnet publish Redout2ModManager.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true /p:DebugType=none -o publish-compressed
