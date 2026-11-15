@@ -98,6 +98,7 @@ internal sealed class MainForm : Form
         };
         actions.Controls.Add(CreateButton("Import Mods...", new Size(135, 30), ImportMods));
         actions.Controls.Add(CreateButton("Refresh Mod List", new Size(150, 30), RefreshMods));
+        actions.Controls.Add(CreateButton("Toggle All", new Size(100, 30), ToggleAllMods));
         _applyChangesButton = CreateButton("Apply Changes", new Size(120, 30), ApplyModChanges);
         _applyChangesButton.Enabled = false;
         actions.Controls.Add(_applyChangesButton);
@@ -1323,6 +1324,26 @@ internal sealed class MainForm : Form
         }
         _applyChangesButton.Enabled = HasPendingChanges();
         _removeButton.Enabled = _modList.SelectedItems.Count > 0;
+    }
+
+    private void ToggleAllMods()
+    {
+        var shouldCheck = _modList.Items.Cast<ListViewItem>().Any(item => !item.Checked);
+        _initializing = true;
+        _modList.BeginUpdate();
+        try
+        {
+            foreach (ListViewItem item in _modList.Items)
+            {
+                item.Checked = shouldCheck;
+            }
+        }
+        finally
+        {
+            _modList.EndUpdate();
+            _initializing = false;
+        }
+        UpdateSelectionButtons();
     }
 
     private bool HasPendingChanges()

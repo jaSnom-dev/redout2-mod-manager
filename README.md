@@ -8,7 +8,7 @@ The interface uses Redout 2's black, white, and blue (`#4054B2`) brand palette.
 - Import `.pak` files and `.pak.disabled` files (with matching `.sig` or `.sig.disabled` files), or ZIP archives containing one `.pak` (and an optional matching `.sig`). Existing PAKs in the game's folder can be registered through the same **Import Mods...** button.
 - Reimporting a managed PAK restores it if its game-folder copy is missing; already-installed managed PAKs are left unchanged.
 - Drag and drop PAK files or ZIP archives onto the window to import them. External PAKs are copied into the game folder; source files are left untouched.
-- Check mods to set their enabled state, then use **Apply Changes** to toggle them. Disabling renames files in place to `.pak.disabled` and `.sig.disabled`; enabling restores their original names.
+- Check mods individually or use **Toggle All** to check all mods, or uncheck them when all are checked, then use **Apply Changes** to toggle their enabled state. Disabling renames files in place to `.pak.disabled` and `.sig.disabled`; enabling restores their original names.
 - Refresh the managed list and file statuses with **Refresh Mod List**. It removes entries whose enabled and disabled PAK files are both gone. Imports are added automatically; arbitrary game PAK files are not auto-registered.
 - Recognize mods disabled by previous versions in `%LOCALAPPDATA%\Redout2ModManager` and restore them to the game folder when enabled.
 - Uninstall registered mods, open the game Paks folder (including disabled files) with **Mod Folder**, open the Redout 2 Nexus page, and launch the game through Steam.
