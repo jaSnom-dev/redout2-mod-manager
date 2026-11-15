@@ -4,8 +4,10 @@ using System.Security.Cryptography;
 using System.Text;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Diagnostics;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Redout2ModManager;
 using Redout2ModManager.Unix;
 
@@ -35,6 +37,10 @@ try
     Check(report.Contains("Archive: Alpha.pak") && report.Contains("Conflicts with: Beta.pak") &&
           report.Contains("Archive: Beta.pak") && report.Contains("Conflicts with: Alpha.pak") &&
           !report.Contains("Archive: Off.pak"), "complete conflict report excludes disabled mods");
+    var alphaRow = manager.GetRows().Single(row => row.FileName == "Alpha.pak");
+    Check(alphaRow.HasConflicts && alphaRow.Details == "Content/Car.uasset (also in Beta.pak)",
+        "on-demand conflict details keep full overlap text");
+    var pendingAlphaRow = manager.GetRows().Single(row => row.FileName == "Alpha.pak");
     Check(manager.GetRows().Single(row => row.FileName == "Off.pak").Status == "Disabled", "disabled import");
     Check(File.Exists(Path.Combine(paks, "Alpha.sig")), "signature import");
     var again = manager.Import([zip]);
@@ -45,6 +51,9 @@ try
           File.Exists(Path.Combine(paks, "Alpha.sig.disabled")) &&
           File.Exists(Path.Combine(paks, "Off.pak")), "toggle PAK and signature");
     Check(manager.GetRows().Single(row => row.FileName == "Beta.pak").Conflicts == "None", "inactive conflict exclusion");
+    Check(pendingAlphaRow.Details == "Content/Car.uasset (also in Beta.pak)" &&
+          manager.GetRows().Single(row => row.FileName == "Alpha.pak").Details == "This mod is disabled and excluded from conflict detection.",
+        "unevaluated row details retain their original snapshot");
 
     var restored = new ModManager(settings);
     Check(restored.FindGame() == Path.Combine(root, "game"), "saved game selection");
@@ -65,6 +74,7 @@ try
     restored.Uninstall("Alpha.pak");
     Check(!File.Exists(Path.Combine(paks, "Alpha.pak.disabled")) &&
           !File.Exists(Path.Combine(paks, "Alpha.sig.disabled")), "uninstall");
+    TestConflictEdges(root);
     TestLoadOrder(root);
     if (args.Contains("--ui")) TestUi(root);
     var pakPath = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.Ordinal));
@@ -87,6 +97,85 @@ static void Check(bool condition, string description)
 {
     if (!condition) throw new Exception("Failed: " + description);
     Console.WriteLine("PASS " + description);
+}
+
+static void TestConflictEdges(string root)
+{
+    var game = Path.Combine(root, "edge-game");
+    var paks = Path.Combine(game, "Content", "Paks");
+    var source = Path.Combine(root, "edge-source");
+    Directory.CreateDirectory(paks);
+    Directory.CreateDirectory(source);
+    var lists = new (string Name, string? Paths)[]
+    {
+        ("A", "Content/Zed.uasset\nContent/Shared.uasset\nContent/OnlyA.uasset\n"),
+        ("B", "content/shared.UASSET\nContent/Zed.uasset\n"),
+        ("C", "CONTENT/SHARED.uasset\n"),
+        ("D", null),
+        ("E", null)
+    };
+    foreach (var (name, paths) in lists)
+    {
+        File.WriteAllText(Path.Combine(source, name + ".pak"), name);
+        if (paths is not null) File.WriteAllText(Path.Combine(source, name + ".pak.list"), paths);
+    }
+    var manager = new ModManager(Path.Combine(root, "edge-settings"));
+    manager.SelectGame(game);
+    var imported = manager.Import(lists.Select(item => Path.Combine(source, item.Name + ".pak")));
+    Check(imported.Imported == 5 && imported.Errors.Count == 0, "edge conflict import");
+    var modsField = typeof(ModManager).GetField("_mods", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var mods = (System.Collections.IList)modsField.GetValue(manager)!;
+    var entry = mods.Cast<object>().Single(mod => (string)mod.GetType().GetProperty("FileName")!.GetValue(mod)! == "E.pak");
+    var entryType = entry.GetType();
+    var info = new FileInfo(Path.Combine(paks, "E.pak"));
+    entryType.GetProperty("HasPakScan")!.SetValue(entry, true);
+    entryType.GetProperty("ScannedAssetPaths")!.SetValue(entry, new List<string> { "Content/Shared.uasset" });
+    entryType.GetProperty("ScannedPakLength")!.SetValue(entry, info.Length);
+    entryType.GetProperty("ScannedPakLastWriteTimeUtcTicks")!.SetValue(entry, info.LastWriteTimeUtc.Ticks);
+
+    var nl = Environment.NewLine;
+    ModRow Row(string name) => manager.GetRows().Single(row => row.FileName == name);
+    var a = Row("A.pak");
+    var b = Row("B.pak");
+    Check(a.Conflicts == "2 file(s) with B.pak; 1 file(s) with C.pak; 1 file(s) with E.pak" &&
+          b.Conflicts == "2 file(s) with A.pak; 1 file(s) with C.pak; 1 file(s) with E.pak" &&
+          Row("C.pak").Conflicts == "1 file(s) with A.pak; 1 file(s) with B.pak; 1 file(s) with E.pak" &&
+          Row("D.pak").Conflicts == "Not scanned",
+        "case-insensitive overlap counts across list and scan sources");
+    Check(a.Details == "Content/Shared.uasset (also in B.pak, C.pak, E.pak)" + nl + "Content/Zed.uasset (also in B.pak)" &&
+          b.Details == "content/shared.UASSET (also in A.pak, C.pak, E.pak)" + nl + "Content/Zed.uasset (also in A.pak)",
+        "row details follow each mod's own path order and spelling");
+    var report = manager.BuildConflictList();
+    Check(report.Contains("Archive: A.pak" + nl + "  Content/Shared.uasset" + nl + "    Conflicts with: B.pak, C.pak, E.pak" + nl +
+              "  Content/Zed.uasset" + nl + "    Conflicts with: B.pak" + nl + nl + "Archive: B.pak" + nl) &&
+          report.Contains("Archive: E.pak" + nl + "  Content/Shared.uasset" + nl + "    Conflicts with: A.pak, B.pak, C.pak" + nl) &&
+          report.EndsWith("Not scanned (conflicts are unknown):" + nl + "  D.pak" + nl),
+        "complete report ordering and unscanned section");
+
+    File.Delete(Path.Combine(paks, "B.pak"));
+    File.WriteAllText(Path.Combine(paks, "E.pak"), "changed outside the manager");
+    a = Row("A.pak");
+    report = manager.BuildConflictList();
+    Check(a.Conflicts == "1 file(s) with C.pak" && Row("E.pak").Conflicts == "Not scanned" &&
+          a.Details == "Content/Shared.uasset (also in C.pak)" &&
+          !report.Contains("Archive: B.pak") && !report.Contains("Archive: E.pak") &&
+          report.EndsWith("Not scanned (conflicts are unknown):" + nl + "  D.pak" + nl + "  E.pak" + nl),
+        "external file changes and stale scans are reflected immediately");
+
+    var canonical = new List<string> { "A/y", "b/x", "c/d" };
+    Check(ReferenceEquals(PakAssetListReader.NormalizeSortedPaths(canonical), canonical),
+        "canonical manifest paths are reused");
+    Check(PakAssetListReader.NormalizeSortedPaths(["c/d", "a\\Y", "./b//x/", "A/y", "b/x"])
+              .SequenceEqual(["a/Y", "b/x", "c/d"]) &&
+          PakAssetListReader.NormalizeSortedPaths(["a", "A"]).SequenceEqual(["a"]) &&
+          PakAssetListReader.NormalizePath("a/./b") == "a/b",
+        "non-canonical manifest paths are still normalized, de-duplicated and sorted");
+    foreach (var unsafePath in new[] { "../x", "a/../b", "/abs", "a:b", "a\0b", "." })
+    {
+        try { PakAssetListReader.NormalizePath(unsafePath); Check(false, "unsafe path rejected: " + unsafePath); }
+        catch (InvalidDataException) { }
+    }
+    Check(true, "unsafe asset paths are rejected");
 }
 
 static void TestLoadOrder(string root)
@@ -155,10 +244,15 @@ static void TestLoadOrder(string root)
     reloaded.Apply(new Dictionary<string, bool> { ["001_Beta.pak"] = true });
     Check(reloaded.GetRows().Single(row => row.FileName == "003_Alpha.pak").Conflicts ==
         "1 file(s) with 001_Beta.pak", "conflict metadata follows renamed archives");
+    var beforeReorder = reloaded.GetRows().Single(row => row.FileName == "001_Beta.pak");
     reloaded.ApplyLoadOrder(["003_Alpha.pak", "001_Beta.pak", "002_Gamma.pak", "004_Unknown.pak"]);
     Check(File.Exists(Path.Combine(paks, "001_Alpha.pak")) && File.Exists(Path.Combine(paks, "002_Beta.pak")) &&
           File.Exists(Path.Combine(paks, "002_Beta.sig")) && File.Exists(Path.Combine(legacy, "003_Gamma.pak")),
         "repeated ordering replaces existing prefixes");
+    Check(beforeReorder.Details == "content/car.uasset (also in 003_Alpha.pak)",
+        "lazy details retain original archive names after reorder");
+    Check(reloaded.GetRows().Single(row => row.FileName == "002_Beta.pak").Details ==
+        "content/car.uasset (also in 001_Alpha.pak)", "fresh details use renamed archive names");
 }
 
 static void ExpectFailure(Action action, string description)
@@ -247,6 +341,36 @@ static void TestUi(string root)
             Dispatcher.UIThread.RunJobs();
             Check(reportTask.IsCompletedSuccessfully, "UI conflict report closes");
             window.Close();
+
+            var tipGame = Path.Combine(root, "ui-tip-game");
+            var tipSource = Path.Combine(root, "ui-tip-source");
+            Directory.CreateDirectory(Path.Combine(tipGame, "Content", "Paks"));
+            Directory.CreateDirectory(tipSource);
+            foreach (var name in new[] { "Alpha", "Beta" })
+            {
+                File.WriteAllText(Path.Combine(tipSource, name + ".pak"), name);
+                File.WriteAllText(Path.Combine(tipSource, name + ".pak.list"), "Content/Car.uasset\n");
+            }
+            var tipManager = new ModManager(Path.Combine(root, "ui-tip-settings"));
+            tipManager.SelectGame(tipGame);
+            tipManager.Import([Path.Combine(tipSource, "Alpha.pak"), Path.Combine(tipSource, "Beta.pak")]);
+            var tipWindow = new MainWindow(tipManager);
+            tipWindow.Show();
+            Dispatcher.UIThread.RunJobs();
+            var tipRows = (StackPanel)type.GetField("_rows", flags)!.GetValue(tipWindow)!;
+            var tipSelect = (RadioButton)((Grid)tipRows.Children[0]).Children[0];
+            tipSelect.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            ((Button)type.GetField("_moveDown", flags)!.GetValue(tipWindow)!).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var tipConflicts = (TextBlock)((Grid)tipRows.Children[1]).Children[3];
+            Check(tipConflicts.Text == "1 file(s) with Beta.pak", "UI move rebuild keeps conflict text");
+            ToolTip.SetIsOpen(tipConflicts, true);
+            Dispatcher.UIThread.RunJobs();
+            var tooltip = tipConflicts.GetValue(ToolTipDiagnostics.ToolTipProperty);
+            Check(tooltip is Visual tooltipVisual && tooltipVisual.GetVisualDescendants().OfType<TextBlock>()
+                    .Any(text => text.Text == "Content/Car.uasset (also in Beta.pak)"),
+                "conflict tooltip renders full lazy details");
+            ToolTip.SetIsOpen(tipConflicts, false);
+            tipWindow.Close();
         }
         catch (Exception ex) { failure = ex; }
     });
