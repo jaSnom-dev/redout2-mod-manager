@@ -55,8 +55,67 @@ internal static class PakAssetListReader
         return paths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
+    // Manifests are written already normalized, so skip the allocation-heavy rebuild when nothing would change.
+    public static List<string> NormalizeSortedPaths(List<string> paths)
+    {
+        var sorted = true;
+        string? previous = null;
+        foreach (var path in paths)
+        {
+            if (!IsCanonical(path))
+            {
+                sorted = false;
+                break;
+            }
+            if (previous is not null && StringComparer.OrdinalIgnoreCase.Compare(previous, path) >= 0)
+            {
+                sorted = false;
+                break;
+            }
+            previous = path;
+        }
+        return sorted
+            ? paths
+            : paths.Select(NormalizePath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+    }
+
+    private static bool IsCanonical(string path)
+    {
+        var segmentStart = 0;
+        for (var i = 0; i <= path.Length; i++)
+        {
+            var c = i < path.Length ? path[i] : '/';
+            if (c is '\\' or ':' or '\0')
+            {
+                return false;
+            }
+            if (c != '/')
+            {
+                continue;
+            }
+
+            var length = i - segmentStart;
+            if (length == 0 ||
+                (length == 1 && path[segmentStart] == '.') ||
+                (length == 2 && path[segmentStart] == '.' && path[segmentStart + 1] == '.'))
+            {
+                return false;
+            }
+            segmentStart = i + 1;
+        }
+        return true;
+    }
+
     public static string NormalizePath(string path)
     {
+        if (IsCanonical(path))
+        {
+            return path;
+        }
+
         var normalized = path.Replace('\\', '/');
         var segments = normalized.Split('/');
         if (normalized.StartsWith('/') ||

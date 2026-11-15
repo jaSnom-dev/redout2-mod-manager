@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using System.Text;
@@ -622,17 +623,9 @@ internal sealed class MainForm : Form
                     throw new InvalidDataException($"The saved mod list contains an invalid PAK name: {entry.FileName}");
                 }
                 entry.AssetPaths ??= [];
-                entry.AssetPaths = entry.AssetPaths
-                    .Select(PakAssetListReader.NormalizePath)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                entry.AssetPaths = PakAssetListReader.NormalizeSortedPaths(entry.AssetPaths);
                 entry.ScannedAssetPaths ??= [];
-                entry.ScannedAssetPaths = entry.ScannedAssetPaths
-                    .Select(PakAssetListReader.NormalizePath)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                entry.ScannedAssetPaths = PakAssetListReader.NormalizeSortedPaths(entry.ScannedAssetPaths);
                 entry.HasAssetList |= entry.AssetPaths.Count > 0;
                 if (_mods.Any(mod => mod.FileName.Equals(entry.FileName, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -1974,24 +1967,27 @@ internal sealed class MainForm : Form
         try
         {
             _modList.Items.Clear();
-            var potentialConflicts = AnalyzePotentialConflicts();
-            foreach (var mod in _mods
-                .OrderBy(mod => stagedOrder is not null && stagedOrder.TryGetValue(mod.FileName, out var index) ? index : int.MaxValue)
-                .ThenBy(mod => mod.DisplayName, StringComparer.OrdinalIgnoreCase))
+            var sources = CaptureConflictSources(includeInactivePaths: true);
+            var analysis = AnalyzeConflicts(sources);
+            foreach (var index in Enumerable.Range(0, sources.Count)
+                .OrderBy(index => stagedOrder is not null && stagedOrder.TryGetValue(sources[index].Mod.FileName, out var position) ? position : int.MaxValue)
+                .ThenBy(index => sources[index].Mod.DisplayName, StringComparer.OrdinalIgnoreCase))
             {
+                var source = sources[index];
+                var mod = source.Mod;
                 var item = new ListViewItem(mod.DisplayName) { Tag = mod.FileName };
-                var isActive = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
+                var isActive = source.IsActive;
                 item.Checked = desiredStates.TryGetValue(mod.FileName, out var shouldBeEnabled)
                     ? shouldBeEnabled
                     : isActive;
-                item.SubItems.Add(GetModStatus(mod));
-                item.SubItems.Add(GetConflictText(mod, isActive, potentialConflicts));
-                if (isActive && potentialConflicts.ContainsKey(mod.FileName))
+                item.SubItems.Add(GetModStatus(mod, isActive));
+                item.SubItems.Add(GetConflictText(analysis, index));
+                if (isActive && analysis.HasConflicts(index))
                 {
                     item.UseItemStyleForSubItems = false;
                     item.SubItems[2].ForeColor = Color.Orange;
                 }
-                item.ToolTipText = GetConflictTooltip(mod, isActive, potentialConflicts);
+                item.ToolTipText = GetConflictTooltip(analysis, index);
                 _modList.Items.Add(item);
             }
         }
@@ -2008,53 +2004,128 @@ internal sealed class MainForm : Form
         UpdateSelectionButtons();
     }
 
-    private Dictionary<string, List<PakAssetConflict>> AnalyzePotentialConflicts()
+    private List<ConflictSource> CaptureConflictSources(bool includeInactivePaths)
     {
-        var assetsToMods = new Dictionary<string, List<ModEntry>>(StringComparer.OrdinalIgnoreCase);
+        var sources = new List<ConflictSource>(_mods.Count);
         foreach (var mod in _mods)
         {
-            if (!File.Exists(Path.Combine(_paksDirectory, mod.FileName)) ||
-                !TryGetAssetPaths(mod, out var assetPaths))
-            {
-                continue;
-            }
-
-            foreach (var assetPath in assetPaths)
-            {
-                if (!assetsToMods.TryGetValue(assetPath, out var owners))
-                {
-                    owners = [];
-                    assetsToMods.Add(assetPath, owners);
-                }
-                owners.Add(mod);
-            }
+            var isActive = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
+            IReadOnlyList<string> assetPaths = [];
+            var hasPaths = (isActive || includeInactivePaths) && TryGetAssetPaths(mod, out assetPaths);
+            sources.Add(new ConflictSource(mod, isActive, hasPaths, assetPaths));
         }
+        return sources;
+    }
 
-        var conflicts = new Dictionary<string, List<PakAssetConflict>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (assetPath, owners) in assetsToMods)
+    // Builds one point-in-time overlap index so rows, tooltips, status and the report cannot disagree.
+    private static ConflictAnalysis AnalyzeConflicts(IReadOnlyList<ConflictSource> sources)
+    {
+        var capacity = 0;
+        foreach (var source in sources)
         {
-            if (owners.Count < 2)
+            if (source.IsActive && source.HasPaths)
+            {
+                capacity = Math.Max(capacity, source.Paths.Count);
+            }
+        }
+
+        var firstOwners = new Dictionary<string, FirstAssetOwner>(capacity, StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, SharedAssetBuilder>? repeated = null;
+        var sequence = 0;
+        for (var index = 0; index < sources.Count; index++)
+        {
+            var source = sources[index];
+            if (!source.IsActive || !source.HasPaths)
             {
                 continue;
             }
 
-            foreach (var owner in owners)
+            foreach (var assetPath in source.Paths)
             {
-                if (!conflicts.TryGetValue(owner.FileName, out var modConflicts))
+                ref var slot = ref CollectionsMarshal.GetValueRefOrAddDefault(firstOwners, assetPath, out var exists);
+                if (!exists)
                 {
-                    modConflicts = [];
-                    conflicts.Add(owner.FileName, modConflicts);
+                    slot = new FirstAssetOwner(assetPath, index, sequence++);
+                    continue;
                 }
-                modConflicts.Add(new PakAssetConflict(
-                    assetPath,
-                    owners.Where(other => !ReferenceEquals(other, owner))
-                        .Select(other => other.FileName)
-                        .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-                        .ToList()));
+
+                repeated ??= new Dictionary<string, SharedAssetBuilder>(StringComparer.OrdinalIgnoreCase);
+                if (!repeated.TryGetValue(slot.Path, out var builder))
+                {
+                    builder = new SharedAssetBuilder(slot.Path, slot.Sequence) { Owners = { slot.Owner } };
+                    repeated.Add(slot.Path, builder);
+                }
+                builder.Owners.Add(index);
             }
         }
 
-        return conflicts;
+        var shared = new List<SharedAsset>(repeated?.Count ?? 0);
+        if (repeated is not null)
+        {
+            foreach (var builder in repeated.Values.OrderBy(builder => builder.Sequence))
+            {
+                var owners = builder.Owners.ToArray();
+                var byName = owners
+                    .OrderBy(owner => sources[owner].Mod.FileName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                shared.Add(new SharedAsset(builder.Path, owners, byName));
+            }
+        }
+
+        return new ConflictAnalysis(sources, shared, GroupByOwner(shared, Enumerable.Range(0, shared.Count), sources.Count));
+    }
+
+    private static List<int>?[] GroupByOwner(List<SharedAsset> shared, IEnumerable<int> order, int modCount)
+    {
+        var byMod = new List<int>?[modCount];
+        foreach (var sharedIndex in order)
+        {
+            foreach (var owner in shared[sharedIndex].Owners)
+            {
+                (byMod[owner] ??= []).Add(sharedIndex);
+            }
+        }
+        return byMod;
+    }
+
+    // Counts mods with overlaps without materializing per-asset conflict details.
+    private int CountConflictedMods()
+    {
+        var sources = CaptureConflictSources(includeInactivePaths: false);
+        var capacity = 0;
+        foreach (var source in sources)
+        {
+            if (source.IsActive && source.HasPaths)
+            {
+                capacity = Math.Max(capacity, source.Paths.Count);
+            }
+        }
+
+        var firstOwners = new Dictionary<string, int>(capacity, StringComparer.OrdinalIgnoreCase);
+        var conflicted = new HashSet<int>();
+        for (var index = 0; index < sources.Count; index++)
+        {
+            var source = sources[index];
+            if (!source.IsActive || !source.HasPaths)
+            {
+                continue;
+            }
+
+            foreach (var assetPath in source.Paths)
+            {
+                ref var owner = ref CollectionsMarshal.GetValueRefOrAddDefault(firstOwners, assetPath, out var exists);
+                if (!exists)
+                {
+                    owner = index;
+                }
+                else
+                {
+                    conflicted.Add(owner);
+                    conflicted.Add(index);
+                }
+            }
+        }
+        return conflicted.Count;
     }
 
     private bool TryGetAssetPaths(ModEntry mod, out IReadOnlyList<string> assetPaths)
@@ -2099,61 +2170,71 @@ internal sealed class MainForm : Form
             file.LastWriteTimeUtc.Ticks == mod.ScannedPakLastWriteTimeUtcTicks;
     }
 
-    private string GetConflictText(ModEntry mod, bool isActive, IReadOnlyDictionary<string, List<PakAssetConflict>> conflicts)
+    private static string GetConflictText(ConflictAnalysis analysis, int index)
     {
-        if (!TryGetAssetPaths(mod, out var assetPaths))
+        var source = analysis.Sources[index];
+        if (!source.HasPaths)
         {
             return "Not scanned";
         }
-        if (!isActive)
+        if (!source.IsActive)
         {
             return "Inactive";
         }
-        if (assetPaths.Count == 0)
+        if (source.Paths.Count == 0)
         {
             return "No assets";
         }
-        if (!conflicts.TryGetValue(mod.FileName, out var modConflicts))
+        if (analysis.ByMod[index] is not { } entries)
         {
             return "None";
         }
 
-        return string.Join("; ", modConflicts
-            .SelectMany(conflict => conflict.OtherMods)
-            .GroupBy(archive => archive, StringComparer.OrdinalIgnoreCase)
-            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(group => $"{group.Count()} file(s) with {group.Key}"));
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sharedIndex in entries)
+        {
+            foreach (var other in analysis.Shared[sharedIndex].OwnersByName)
+            {
+                if (other != index)
+                {
+                    ref var count = ref CollectionsMarshal.GetValueRefOrAddDefault(
+                        counts, analysis.Sources[other].Mod.FileName, out _);
+                    count++;
+                }
+            }
+        }
+        return string.Join("; ", counts
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => $"{pair.Value} file(s) with {pair.Key}"));
     }
 
-    private string GetConflictTooltip(
-        ModEntry mod,
-        bool isActive,
-        IReadOnlyDictionary<string, List<PakAssetConflict>> conflicts)
+    private static string GetConflictTooltip(ConflictAnalysis analysis, int index)
     {
-        if (!TryGetAssetPaths(mod, out var assetPaths))
+        var source = analysis.Sources[index];
+        if (!source.HasPaths)
         {
             return "No asset paths are available. Click Scan PAKs or provide a matching .pak.list file.";
         }
-        if (!isActive)
+        if (!source.IsActive)
         {
             return "This mod is disabled and is excluded from the active-mod conflict scan.";
         }
-        if (assetPaths.Count == 0)
+        if (source.Paths.Count == 0)
         {
             return "The scanned PAK or .pak.list file contains no asset paths.";
         }
-        if (!conflicts.TryGetValue(mod.FileName, out var modConflicts))
+        if (analysis.ByMod[index] is not { } entries)
         {
             return "No asset-path overlaps were found with other enabled, managed mods that have scanned PAKs or .pak.list files.";
         }
 
         const int maximumDetails = 20;
-        var details = modConflicts.Take(maximumDetails)
-            .Select(conflict => $"{conflict.AssetPath} (also listed by {string.Join(", ", conflict.OtherMods)})")
+        var details = entries.Take(maximumDetails)
+            .Select(sharedIndex => $"{analysis.Shared[sharedIndex].Path} (also listed by {string.Join(", ", analysis.OtherOwnerNames(sharedIndex, index))})")
             .ToList();
-        if (modConflicts.Count > maximumDetails)
+        if (entries.Count > maximumDetails)
         {
-            details.Add($"…and {modConflicts.Count - maximumDetails} more overlapping asset path(s).");
+            details.Add($"…and {entries.Count - maximumDetails} more overlapping asset path(s).");
         }
         return "Potential overlaps; load precedence is not inferred:\r\n" + string.Join("\r\n", details);
     }
@@ -2204,34 +2285,42 @@ internal sealed class MainForm : Form
 
     private string BuildConflictList()
     {
-        var conflicts = AnalyzePotentialConflicts();
+        var sources = CaptureConflictSources(includeInactivePaths: false);
+        var analysis = AnalyzeConflicts(sources);
         var report = new StringBuilder();
         report.AppendLine("Potential overlaps between enabled, managed archives.");
         report.AppendLine("This reflects applied file states, not pending checkbox changes. Load order is not inferred.");
         report.AppendLine();
 
-        if (conflicts.Count == 0)
+        var archives = Enumerable.Range(0, sources.Count)
+            .Where(index => analysis.ByMod[index] is not null)
+            .OrderBy(index => sources[index].Mod.FileName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (archives.Count == 0)
         {
             report.AppendLine("No known asset-path overlaps.");
         }
         else
         {
-            foreach (var (archive, entries) in conflicts.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+            var pathOrder = Enumerable.Range(0, analysis.Shared.Count)
+                .OrderBy(sharedIndex => analysis.Shared[sharedIndex].Path, StringComparer.OrdinalIgnoreCase);
+            var sortedByMod = GroupByOwner(analysis.Shared, pathOrder, sources.Count);
+            foreach (var index in archives)
             {
-                report.AppendLine($"Archive: {archive}");
-                foreach (var conflict in entries.OrderBy(entry => entry.AssetPath, StringComparer.OrdinalIgnoreCase))
+                report.Append("Archive: ").AppendLine(sources[index].Mod.FileName);
+                foreach (var sharedIndex in sortedByMod[index]!)
                 {
-                    report.AppendLine($"  {conflict.AssetPath}");
-                    report.AppendLine($"    Conflicts with: {string.Join(", ", conflict.OtherMods)}");
+                    report.Append("  ").AppendLine(analysis.Shared[sharedIndex].Path);
+                    report.Append("    Conflicts with: ")
+                        .AppendJoin(", ", analysis.OtherOwnerNames(sharedIndex, index)).AppendLine();
                 }
                 report.AppendLine();
             }
         }
 
-        var unscanned = _mods
-            .Where(mod => File.Exists(Path.Combine(_paksDirectory, mod.FileName)) &&
-                !TryGetAssetPaths(mod, out _))
-            .Select(mod => mod.FileName)
+        var unscanned = sources
+            .Where(source => source.IsActive && !source.HasPaths)
+            .Select(source => source.Mod.FileName)
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
         if (unscanned.Count > 0)
@@ -2246,9 +2335,8 @@ internal sealed class MainForm : Form
         return report.ToString();
     }
 
-    private string GetModStatus(ModEntry mod)
+    private string GetModStatus(ModEntry mod, bool isActive)
     {
-        var isActive = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
         var isRenamedDisabled = File.Exists(GetDisabledPath(mod.FileName));
         var isLegacyDisabled = File.Exists(GetLegacyDisabledPath(mod.FileName));
         if (isActive && !isRenamedDisabled && !isLegacyDisabled)
@@ -2281,7 +2369,7 @@ internal sealed class MainForm : Form
             .DefaultIfEmpty(0)
             .Max();
         _modList.Columns[^1].Width = Math.Max(
-            Math.Max(140, _modList.ClientSize.Width - precedingColumnsWidth - 6),
+            Math.Max(140, _modList.ClientSize.Width - precedingColumnsWidth),
             Math.Min(textWidth, 4000));
     }
 
@@ -2365,7 +2453,7 @@ internal sealed class MainForm : Form
 
     private void SetStatus(string message)
     {
-        var affectedMods = AnalyzePotentialConflicts().Count;
+        var affectedMods = CountConflictedMods();
         if (affectedMods > 0)
         {
             message += $" Potential asset conflicts affect {affectedMods} enabled mod(s); see the conflict column.";
@@ -2402,7 +2490,27 @@ internal sealed class MainForm : Form
         public long ScannedPakLastWriteTimeUtcTicks { get; set; }
     }
 
-    private sealed record PakAssetConflict(string AssetPath, List<string> OtherMods);
+    private readonly record struct ConflictSource(ModEntry Mod, bool IsActive, bool HasPaths, IReadOnlyList<string> Paths);
+    private readonly record struct FirstAssetOwner(string Path, int Owner, int Sequence);
+    private sealed record SharedAssetBuilder(string Path, int Sequence)
+    {
+        public List<int> Owners { get; } = [];
+    }
+    private sealed record SharedAsset(string Path, int[] Owners, int[] OwnersByName);
+    private sealed class ConflictAnalysis(
+        IReadOnlyList<ConflictSource> sources,
+        List<SharedAsset> shared,
+        List<int>?[] byMod)
+    {
+        public IReadOnlyList<ConflictSource> Sources { get; } = sources;
+        public List<SharedAsset> Shared { get; } = shared;
+        // Entries per owner in first-appearance order; an asset listed twice by one mod appears twice.
+        public List<int>?[] ByMod { get; } = byMod;
+        public bool HasConflicts(int index) => ByMod[index] is not null;
+
+        public IEnumerable<string> OtherOwnerNames(int sharedIndex, int index) =>
+            Shared[sharedIndex].OwnersByName.Where(other => other != index).Select(other => Sources[other].Mod.FileName);
+    }
     private sealed class LoadOrderFile(string source, string destination)
     {
         public string Source { get; } = source;
