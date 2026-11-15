@@ -610,12 +610,11 @@ internal sealed class MainForm : Form
                 }
                 else if (extension.Equals(".zip", StringComparison.OrdinalIgnoreCase))
                 {
-                    InstallArchive(path);
-                    imported++;
+                    imported += InstallArchive(path);
                 }
                 else
                 {
-                    throw new InvalidDataException("Choose a .pak, .pak.disabled, or a ZIP containing one .pak mod.");
+                    throw new InvalidDataException("Choose a .pak, .pak.disabled, or a ZIP containing .pak mods.");
                 }
             }
             catch (Exception ex)
@@ -642,53 +641,70 @@ internal sealed class MainForm : Form
             MessageBoxIcon.Warning);
     }
 
-    private void InstallArchive(string archivePath)
+    private int InstallArchive(string archivePath)
     {
         using var archive = ZipFile.OpenRead(archivePath);
         var pakEntries = archive.Entries
             .Where(entry => Path.GetExtension(entry.FullName.Replace('\\', '/')).Equals(".pak", StringComparison.OrdinalIgnoreCase))
             .ToList();
-        if (pakEntries.Count != 1)
+        if (pakEntries.Count == 0)
         {
-            throw new InvalidDataException(
-                pakEntries.Count == 0
-                    ? "The ZIP does not contain a .pak mod file."
-                    : "This ZIP contains more than one .pak file. Install one PAK per archive.");
+            throw new InvalidDataException("The ZIP does not contain a .pak mod file.");
         }
 
-        var pakEntry = pakEntries[0];
-        var fileName = Path.GetFileName(pakEntry.FullName.Replace('\\', '/'));
-        if (!IsSafePakFileName(fileName))
+        var filesToCopy = new List<(ZipArchiveEntry Entry, string Target)>();
+        var newMods = new List<ModEntry>();
+        var fileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pakEntry in pakEntries)
         {
-            throw new InvalidDataException("The archive contains an invalid PAK file name.");
-        }
-        EnsureNotRegisteredOrInstalled(fileName);
+            var fileName = Path.GetFileName(pakEntry.FullName.Replace('\\', '/'));
+            if (!IsSafePakFileName(fileName))
+            {
+                throw new InvalidDataException("The archive contains an invalid PAK file name.");
+            }
+            if (!fileNames.Add(fileName))
+            {
+                throw new InvalidDataException($"The ZIP contains multiple PAKs with the same filename: {fileName}");
+            }
+            EnsureNotRegisteredOrInstalled(fileName);
 
-        var pakTarget = Path.Combine(_paksDirectory, fileName);
-        var signatureEntry = FindSignatureEntry(archive, pakEntry, fileName);
-        var signatureTarget = signatureEntry is null
-            ? null
-            : Path.Combine(_paksDirectory, Path.ChangeExtension(fileName, ".sig"));
-        if (signatureTarget is not null && File.Exists(signatureTarget))
-        {
-            throw new IOException($"A signature file already exists: {Path.GetFileName(signatureTarget)}");
+            filesToCopy.Add((pakEntry, Path.Combine(_paksDirectory, fileName)));
+            var signatureEntry = FindSignatureEntry(archive, pakEntry, fileName);
+            if (signatureEntry is not null)
+            {
+                var signatureTarget = Path.Combine(_paksDirectory, Path.ChangeExtension(fileName, ".sig"));
+                if (File.Exists(signatureTarget))
+                {
+                    throw new IOException($"A signature file already exists: {Path.GetFileName(signatureTarget)}");
+                }
+                filesToCopy.Add((signatureEntry, signatureTarget));
+            }
+            newMods.Add(new ModEntry
+            {
+                FileName = fileName,
+                DisplayName = Path.GetFileNameWithoutExtension(fileName),
+                HasSignature = signatureEntry is not null
+            });
         }
 
         var createdFiles = new List<string>();
         try
         {
-            CopyArchiveEntry(pakEntry, pakTarget);
-            createdFiles.Add(pakTarget);
-            if (signatureEntry is not null && signatureTarget is not null)
+            foreach (var (entry, target) in filesToCopy)
             {
-                CopyArchiveEntry(signatureEntry, signatureTarget);
-                createdFiles.Add(signatureTarget);
+                CopyArchiveEntry(entry, target);
+                createdFiles.Add(target);
             }
 
-            AddManagedMod(fileName, signatureEntry is not null);
+            _mods.AddRange(newMods);
+            SaveManifest();
         }
         catch
         {
+            foreach (var mod in newMods)
+            {
+                _mods.Remove(mod);
+            }
             foreach (var path in createdFiles)
             {
                 if (File.Exists(path))
@@ -698,6 +714,7 @@ internal sealed class MainForm : Form
             }
             throw;
         }
+        return newMods.Count;
     }
 
     private bool ImportPak(string sourcePath)
@@ -849,8 +866,19 @@ internal sealed class MainForm : Form
     private static void CopyArchiveEntry(ZipArchiveEntry entry, string destination)
     {
         using var input = entry.Open();
-        using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        input.CopyTo(output);
+        var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        try
+        {
+            using (output)
+            {
+                input.CopyTo(output);
+            }
+        }
+        catch
+        {
+            File.Delete(destination);
+            throw;
+        }
     }
 
     private void RegisterExistingPak(string fullPath)
