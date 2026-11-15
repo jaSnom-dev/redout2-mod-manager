@@ -196,15 +196,31 @@ internal sealed class MainForm : Form
             Size = new Size(130, 20)
         };
         header.Controls.Add(pathLabel);
+        var pathField = new Panel
+        {
+            BackColor = PanelColor,
+            BorderStyle = BorderStyle.FixedSingle,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            Location = new Point(24, 160),
+            Size = new Size(Width - 250, 32),
+            Padding = new Padding(8, 0, 8, 0)
+        };
         _gamePathBox.ReadOnly = true;
         _gamePathBox.BackColor = PanelColor;
         _gamePathBox.ForeColor = TextColor;
-        _gamePathBox.BorderStyle = BorderStyle.FixedSingle;
-        _gamePathBox.AutoSize = false;
+        _gamePathBox.BorderStyle = BorderStyle.None;
         _gamePathBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _gamePathBox.Location = new Point(24, 160);
-        _gamePathBox.Size = new Size(Width - 250, 32);
-        header.Controls.Add(_gamePathBox);
+        _gamePathBox.Margin = Padding.Empty;
+        pathField.Controls.Add(_gamePathBox);
+        pathField.Layout += (_, _) =>
+        {
+            _gamePathBox.SetBounds(
+                pathField.Padding.Left,
+                Math.Max(0, (pathField.ClientSize.Height - _gamePathBox.PreferredHeight) / 2),
+                Math.Max(0, pathField.ClientSize.Width - pathField.Padding.Horizontal),
+                _gamePathBox.PreferredHeight);
+        };
+        header.Controls.Add(pathField);
 
         var browseButton = CreateButton("Browse...", BrowseForGameFolder);
         browseButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -223,7 +239,7 @@ internal sealed class MainForm : Form
             browseButton.Left = nexusButton.Left;
             title.Width = Math.Max(0, nexusButton.Left - title.Left - 16);
             subtitle.Width = Math.Max(0, nexusButton.Left - subtitle.Left - 16);
-            _gamePathBox.Width = Math.Max(0, browseButton.Left - _gamePathBox.Left - 16);
+            pathField.Width = Math.Max(0, browseButton.Left - pathField.Left - 16);
             _statusLabel.Width = Math.Max(0, header.ClientSize.Width - _statusLabel.Left - 24);
         };
 
