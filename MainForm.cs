@@ -401,6 +401,11 @@ internal sealed class MainForm : Form
 
     private string FindDefaultGameDirectory()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Steam registry detection requires Windows.");
+        }
+
         var steamRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var registeredSteamPath = Registry.GetValue(
             @"HKEY_CURRENT_USER\Software\Valve\Steam",
