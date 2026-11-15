@@ -14,15 +14,18 @@ namespace Redout2ModManager.Unix;
 internal sealed class MainWindow : Window
 {
     private readonly ModManager _manager;
-    private readonly TextBlock _gamePath = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly TextBox _gamePath = new() { IsReadOnly = true };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
-    private readonly StackPanel _rows = new() { Spacing = 5 };
+    private readonly StackPanel _rows = new();
     private readonly Dictionary<string, CheckBox> _checks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Grid _content = new();
     private readonly List<string> _order = [];
+    private IReadOnlyDictionary<string, ModRow> _displayedRows = new Dictionary<string, ModRow>();
     private readonly Button _moveUp;
     private readonly Button _moveDown;
     private readonly Button _applyOrder;
+    private readonly Button _details;
+    private readonly Button _uninstall;
     private string? _selectedMod;
     private bool _loadOrderPending;
 
@@ -34,64 +37,106 @@ internal sealed class MainWindow : Window
         var version = typeof(MainWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
             .InformationalVersion.Split('+')[0];
         Title = $"Redout 2 Mod Manager v{version}";
-        Width = 1000;
-        Height = 700;
-        MinWidth = 720;
-        MinHeight = 500;
+        Width = 960;
+        Height = 680;
+        MinWidth = 820;
+        MinHeight = 560;
         Background = Brush.Parse("#080A11");
         Foreground = Brush.Parse("#F4F6FF");
 
         _content.RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto,Auto");
-        _content.Margin = new Thickness(20);
+        _content.Margin = new Thickness(24, 16, 24, 12);
 
-        var heading = new StackPanel { Spacing = 6 };
-        heading.Children.Add(new TextBlock { Text = Title, FontSize = 24, FontWeight = FontWeight.Bold });
-        heading.Children.Add(new TextBlock { Text = "Manage PAK mods without changing unregistered game files." });
-        Add(heading, 0);
+        var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,150") };
+        var heading = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,*,Auto,Auto"),
+            Margin = new Thickness(0, 0, 16, 0) };
+        heading.Children.Add(new TextBlock { Text = $"REDOUT 2 MOD MANAGER v{version}", FontSize = 24, FontWeight = FontWeight.Bold,
+            TextTrimming = TextTrimming.CharacterEllipsis });
+        var subtitle = new TextBlock { Text = "Install and toggle managed PAK mods. Game files are left untouched.",
+            TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 4, 0, 0) };
+        Grid.SetRow(subtitle, 1);
+        heading.Children.Add(subtitle);
+        var scanActions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 18, 0, 0) };
+        scanActions.Children.Add(MakeButton("Scan PAKs", async () => await Scan()));
+        scanActions.Children.Add(MakeButton("Conflict List", async () => await ShowConflictList()));
+        _details = MakeButton("Details", async () => await ShowSelectedDetails());
+        scanActions.Children.Add(_details);
+        foreach (var button in scanActions.Children.OfType<Button>()) button.Width = 150;
+        Grid.SetRow(scanActions, 2);
+        heading.Children.Add(scanActions);
+        var pathLabel = new TextBlock { Text = "GAME FOLDER", Margin = new Thickness(3, 0, 0, 4) };
+        Grid.SetRow(pathLabel, 3);
+        heading.Children.Add(pathLabel);
+        Grid.SetRow(_gamePath, 4);
+        heading.Children.Add(_gamePath);
+        header.Children.Add(heading);
 
-        var gamePanel = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        gamePanel.Children.Add(_gamePath);
-        var browse = MakeButton("Browse...", async () => await Browse());
-        Grid.SetColumn(browse, 1);
-        gamePanel.Children.Add(browse);
-        Add(gamePanel, 1);
+        var links = new StackPanel { Spacing = 4 };
+        links.Children.Add(MakeLinkButton("Nexus Mods", "nexus-mods.png", () => Open("https://www.nexusmods.com/redout2")));
+        links.Children.Add(MakeLinkButton("GameBanana", "gamebanana.png", () => Open("https://gamebanana.com/games/24088")));
+        var start = MakeLinkButton("Start Game", "redout2-steam.jpg", () => Open("steam://rungameid/1799930"));
+        start.Background = Brush.Parse("#4356AB");
+        links.Children.Add(start);
+        links.Children.Add(MakeLinkButton("Discord", "discord-icon.png", () => Open("https://discord.com/invite/redout")));
+        links.Children.Add(MakeButton("Browse...", async () => await Browse()));
+        foreach (var button in links.Children.OfType<Button>()) button.HorizontalAlignment = HorizontalAlignment.Stretch;
+        Grid.SetColumn(links, 1);
+        header.Children.Add(links);
+        Add(header, 0);
+        _status.Margin = new Thickness(3, 8, 3, 8);
+        Add(_status, 1);
 
         var listPanel = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
-        listPanel.Children.Add(new TextBlock { Text = "Select a mod to change its order. Checkboxes control enabled state.", FontWeight = FontWeight.Bold });
+        var columnHeaders = new Grid { ColumnDefinitions = new ColumnDefinitions("260,150,*"),
+            Background = Brush.Parse("#1A2238"), MinHeight = 28 };
+        foreach (var (label, column) in new[] { ("Mod List", 0), ("Status", 1), ("Potential Conflicts", 2) })
+        {
+            var text = new TextBlock { Text = label, Margin = new Thickness(8, 0), VerticalAlignment = VerticalAlignment.Center };
+            Grid.SetColumn(text, column);
+            columnHeaders.Children.Add(text);
+        }
+        listPanel.Children.Add(columnHeaders);
         var scroll = new ScrollViewer { Content = _rows, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto };
         Grid.SetRow(scroll, 1);
         listPanel.Children.Add(scroll);
         Add(listPanel, 2);
 
-        var actions = new WrapPanel { Orientation = Orientation.Horizontal };
-        actions.Children.Add(MakeButton("Import Mods...", async () => await Import()));
-        actions.Children.Add(MakeButton("Refresh Mod List", () => Run(() => { _manager.Refresh(); RefreshRows(); SetStatus("Mod list refreshed."); })));
-        actions.Children.Add(MakeButton("Toggle All", () =>
+        var actions = new Grid { ColumnDefinitions = new ColumnDefinitions("*,*,*,*,*,*"), Margin = new Thickness(0, 12, 0, 8) };
+        var actionButtons = new[]
+        {
+            MakeButton("Import Mods...", async () => await Import()),
+            MakeButton("Refresh Mod List", () => Run(() => { _manager.Refresh(); RefreshRows(); SetStatus("Mod list refreshed."); })),
+            MakeButton("Toggle All", () =>
         {
             var enable = _checks.Values.Any(check => check.IsChecked != true);
             foreach (var check in _checks.Values) check.IsChecked = enable;
-        }));
-        actions.Children.Add(MakeButton("Apply Changes", () => Run(() =>
+        }),
+            MakeButton("Apply Changes", () => Run(() =>
         {
             _manager.Apply(_checks.ToDictionary(pair => pair.Key, pair => pair.Value.IsChecked == true, StringComparer.OrdinalIgnoreCase));
             RefreshRows();
             SetStatus("Mod changes applied.");
-        })));
-        actions.Children.Add(MakeButton("Scan PAKs", async () => await Scan()));
-        actions.Children.Add(MakeButton("Conflict List", async () => await ShowConflictList()));
+        })),
+            _uninstall = MakeButton("Uninstall", async () => await UninstallSelected()),
+            MakeButton("Mod Folder", () => Open(_manager.PaksDirectory))
+        };
+        for (var i = 0; i < actionButtons.Length; i++)
+        {
+            actionButtons[i].HorizontalAlignment = HorizontalAlignment.Stretch;
+            Grid.SetColumn(actionButtons[i], i);
+            actions.Children.Add(actionButtons[i]);
+        }
+        Add(actions, 3);
+
+        var orderActions = new StackPanel { Orientation = Orientation.Horizontal };
         _moveUp = MakeButton("Move Up", () => MoveSelected(-1));
         _moveDown = MakeButton("Move Down", () => MoveSelected(1));
         _applyOrder = MakeButton("Apply Load Order", async () => await ApplyLoadOrder());
-        actions.Children.Add(_moveUp);
-        actions.Children.Add(_moveDown);
-        actions.Children.Add(_applyOrder);
-        actions.Children.Add(MakeButton("Mod Folder", () => Open(_manager.PaksDirectory)));
-        actions.Children.Add(MakeLinkButton("Start Game", "redout2-steam.jpg", () => Open("steam://rungameid/1799930")));
-        actions.Children.Add(MakeLinkButton("Nexus Mods", "nexus-mods.png", () => Open("https://www.nexusmods.com/redout2")));
-        actions.Children.Add(MakeLinkButton("GameBanana", "gamebanana.png", () => Open("https://gamebanana.com/games/24088")));
-        actions.Children.Add(MakeLinkButton("Discord", "discord-icon.png", () => Open("https://discord.com/invite/redout")));
-        Add(actions, 3);
-        Add(_status, 4);
+        orderActions.Children.Add(_moveUp);
+        orderActions.Children.Add(_moveDown);
+        orderActions.Children.Add(_applyOrder);
+        foreach (var button in orderActions.Children.OfType<Button>()) button.Width = 150;
+        Add(orderActions, 4);
         UpdateOrderButtons();
         Content = _content;
         DragDrop.SetAllowDrop(_content, true);
@@ -133,7 +178,17 @@ internal sealed class MainWindow : Window
 
     private static Button MakeButton(string text, Action action)
     {
-        var button = new Button { Content = text, Margin = new Thickness(3), Padding = new Thickness(10, 6) };
+        var button = new Button
+        {
+            Content = text,
+            Margin = new Thickness(3),
+            Padding = new Thickness(10, 6),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            Background = Brush.Parse("#1A2238"),
+            Foreground = Brush.Parse("#F4F6FF"),
+            BorderBrush = Brush.Parse("#344E8A"),
+            BorderThickness = new Thickness(1)
+        };
         button.Click += (_, _) => action();
         return button;
     }
@@ -143,6 +198,7 @@ internal sealed class MainWindow : Window
         using var stream = typeof(MainWindow).Assembly.GetManifestResourceStream($"Redout2ModManager.Assets.{icon}")
             ?? throw new InvalidOperationException($"Missing embedded icon: {icon}");
         var button = MakeButton(text, action);
+        button.HorizontalContentAlignment = HorizontalAlignment.Left;
         button.Content = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -242,6 +298,7 @@ internal sealed class MainWindow : Window
         if (stateOverrides is not null)
             foreach (var (name, enabled) in stateOverrides) previousChecks[name] = enabled;
         var byName = rows.ToDictionary(row => row.FileName, StringComparer.OrdinalIgnoreCase);
+        _displayedRows = byName;
         if (_loadOrderPending)
         {
             _order.RemoveAll(name => !byName.ContainsKey(name));
@@ -261,7 +318,8 @@ internal sealed class MainWindow : Window
         foreach (var name in _order)
         {
             var row = byName[name];
-            var panel = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,220,130,320,Auto,Auto") };
+            var panel = new Grid { ColumnDefinitions = new ColumnDefinitions("260,150,*"), MinHeight = 32 };
+            var modCell = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
             var select = new RadioButton
             {
                 GroupName = "LoadOrderSelection",
@@ -270,40 +328,31 @@ internal sealed class MainWindow : Window
             };
             AutomationProperties.SetName(select, $"Select {row.DisplayName} for load order");
             select.Click += (_, _) => { _selectedMod = row.FileName; UpdateOrderButtons(); };
-            panel.Children.Add(select);
+            modCell.Children.Add(select);
             var check = new CheckBox
             {
-                Content = row.DisplayName,
+                Content = new TextBlock { Text = row.DisplayName, TextTrimming = TextTrimming.CharacterEllipsis },
                 IsChecked = previousChecks.TryGetValue(row.FileName, out var enabled) ? enabled : row.Enabled,
                 VerticalAlignment = VerticalAlignment.Center
             };
             _checks.Add(row.FileName, check);
             Grid.SetColumn(check, 1);
-            panel.Children.Add(check);
-            var status = new TextBlock { Text = row.Status, VerticalAlignment = VerticalAlignment.Center };
-            Grid.SetColumn(status, 2);
+            modCell.Children.Add(check);
+            panel.Children.Add(modCell);
+            var status = new TextBlock { Text = row.Status, Margin = new Thickness(8, 0), VerticalAlignment = VerticalAlignment.Center };
+            Grid.SetColumn(status, 1);
             panel.Children.Add(status);
             var conflicts = new TextBlock
             {
                 Text = row.Conflicts,
                 TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(8, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 Foreground = row.HasConflicts ? Brushes.Orange : Foreground
             };
             ToolTip.SetTip(conflicts, row.HasConflicts ? new LazyText(() => row.Details) : row.Details);
-            Grid.SetColumn(conflicts, 3);
+            Grid.SetColumn(conflicts, 2);
             panel.Children.Add(conflicts);
-            var details = MakeButton("Details", async () => await ShowMessage(row.Details));
-            Grid.SetColumn(details, 4);
-            panel.Children.Add(details);
-            var uninstall = MakeButton("Uninstall", async () =>
-            {
-                if (!await Confirm($"Uninstall {row.DisplayName}? This deletes its managed PAK and signature.", "Uninstall"))
-                    return;
-                Run(() => { _manager.Uninstall(row.FileName); RefreshRows(); SetStatus($"Uninstalled {row.DisplayName}."); });
-            });
-            Grid.SetColumn(uninstall, 5);
-            panel.Children.Add(uninstall);
             _rows.Children.Add(panel);
         }
         UpdateOrderButtons();
@@ -316,6 +365,23 @@ internal sealed class MainWindow : Window
         _moveUp.IsEnabled = index > 0;
         _moveDown.IsEnabled = index >= 0 && index < _order.Count - 1;
         _applyOrder.IsEnabled = _loadOrderPending;
+        _details.IsEnabled = index >= 0;
+        _uninstall.IsEnabled = index >= 0;
+    }
+
+    private async Task ShowSelectedDetails()
+    {
+        if (_selectedMod is not null && _displayedRows.TryGetValue(_selectedMod, out var row))
+            await ShowMessage(row.Details);
+    }
+
+    private async Task UninstallSelected()
+    {
+        if (_selectedMod is null || !_displayedRows.TryGetValue(_selectedMod, out var row))
+            return;
+        if (!await Confirm($"Uninstall {row.DisplayName}? This deletes its managed PAK and signature.", "Uninstall"))
+            return;
+        Run(() => { _manager.Uninstall(row.FileName); RefreshRows(); SetStatus($"Uninstalled {row.DisplayName}."); });
     }
 
     private void MoveSelected(int direction)
