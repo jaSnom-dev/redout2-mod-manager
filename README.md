@@ -5,7 +5,7 @@ The interface uses Redout 2's black, white, and blue (`#4054B2`) brand palette.
 
 ## Features
 
-- Import `.pak` files and `.pak.disabled` files (with matching `.sig` or `.sig.disabled` files), or ZIP mod packs containing multiple `.pak` files. Each PAK's optional matching `.sig` is taken from the same archive folder. Existing PAKs in the game's folder can be registered through the same **Import Mods...** button.
+- Import `.pak` files and `.pak.disabled` files (with matching `.sig` or `.sig.disabled` files), or ZIP mod packs containing any mix of these files. Each PAK's optional matching signature is taken from the same archive folder. Disabled files stay disabled on import and appear unchecked with a **Disabled** status. Existing PAKs in the game's folder can be registered through the same **Import Mods...** button.
 - ZIP imports include PAKs in subfolders and install them directly into the game's Paks folder. Duplicate PAK filenames or conflicts with existing mods reject the whole ZIP without overwriting files; a failed import rolls back that ZIP's newly installed files.
 - Reimporting a managed PAK restores it if its game-folder copy is missing; already-installed managed PAKs are left unchanged.
 - Drag and drop PAK files or ZIP archives onto the window to import them. External PAKs are copied into the game folder; source files are left untouched.

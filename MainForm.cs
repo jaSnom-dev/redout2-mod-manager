@@ -123,7 +123,7 @@ internal sealed class MainForm : Form
         header.Controls.Add(title);
         var subtitle = new Label
         {
-            Text = "Install and toggle managed PAK mods. Game files are left untouched unless you register them.",
+            Text = "Install and toggle managed PAK mods. Game files are left untouched.",
             ForeColor = MutedColor,
             Location = new Point(26, 54),
             Size = new Size(680, 22)
@@ -583,7 +583,7 @@ internal sealed class MainForm : Form
     {
         var imported = 0;
         var alreadyManaged = 0;
-        var restoredMods = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var restoredMods = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var failures = new List<string>();
         foreach (var path in paths)
         {
@@ -600,7 +600,7 @@ internal sealed class MainForm : Form
                         imported++;
                         if (wasManaged)
                         {
-                            restoredMods.Add(fileName);
+                            restoredMods[fileName] = !IsDisabledPakPath(path);
                         }
                     }
                     else
@@ -614,7 +614,7 @@ internal sealed class MainForm : Form
                 }
                 else
                 {
-                    throw new InvalidDataException("Choose a .pak, .pak.disabled, or a ZIP containing .pak mods.");
+                    throw new InvalidDataException("Choose a .pak, .pak.disabled, or a ZIP containing .pak or .pak.disabled mods.");
                 }
             }
             catch (Exception ex)
@@ -623,7 +623,7 @@ internal sealed class MainForm : Form
             }
         }
 
-        RefreshModList(preserveDesiredStates: true, enabledOverrides: restoredMods);
+        RefreshModList(preserveDesiredStates: true, stateOverrides: restoredMods);
         if (failures.Count == 0)
         {
             SetStatus(imported == 0
@@ -645,11 +645,11 @@ internal sealed class MainForm : Form
     {
         using var archive = ZipFile.OpenRead(archivePath);
         var pakEntries = archive.Entries
-            .Where(entry => Path.GetExtension(entry.FullName.Replace('\\', '/')).Equals(".pak", StringComparison.OrdinalIgnoreCase))
+            .Where(entry => IsPakImportPath(entry.FullName.Replace('\\', '/')))
             .ToList();
         if (pakEntries.Count == 0)
         {
-            throw new InvalidDataException("The ZIP does not contain a .pak mod file.");
+            throw new InvalidDataException("The ZIP does not contain a .pak or .pak.disabled mod file.");
         }
 
         var filesToCopy = new List<(ZipArchiveEntry Entry, string Target)>();
@@ -657,7 +657,9 @@ internal sealed class MainForm : Form
         var fileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pakEntry in pakEntries)
         {
-            var fileName = Path.GetFileName(pakEntry.FullName.Replace('\\', '/'));
+            var entryPath = pakEntry.FullName.Replace('\\', '/');
+            var isDisabledPak = IsDisabledPakPath(entryPath);
+            var fileName = GetPakFileName(entryPath);
             if (!IsSafePakFileName(fileName))
             {
                 throw new InvalidDataException("The archive contains an invalid PAK file name.");
@@ -668,12 +670,13 @@ internal sealed class MainForm : Form
             }
             EnsureNotRegisteredOrInstalled(fileName);
 
-            filesToCopy.Add((pakEntry, Path.Combine(_paksDirectory, fileName)));
+            filesToCopy.Add((pakEntry, isDisabledPak ? GetDisabledPath(fileName) : Path.Combine(_paksDirectory, fileName)));
             var signatureEntry = FindSignatureEntry(archive, pakEntry, fileName);
             if (signatureEntry is not null)
             {
-                var signatureTarget = Path.Combine(_paksDirectory, Path.ChangeExtension(fileName, ".sig"));
-                if (File.Exists(signatureTarget))
+                var signatureName = Path.ChangeExtension(fileName, ".sig");
+                var signatureTarget = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
+                if (File.Exists(Path.Combine(_paksDirectory, signatureName)) || File.Exists(GetDisabledPath(signatureName)))
                 {
                     throw new IOException($"A signature file already exists: {Path.GetFileName(signatureTarget)}");
                 }
@@ -750,9 +753,11 @@ internal sealed class MainForm : Form
         EnsureNotRegisteredOrInstalled(fileName);
         var sourceSignature = GetSourceSignaturePath(fullSourcePath, isDisabledPak);
         var hasSignature = File.Exists(sourceSignature);
-        var targetPak = Path.Combine(_paksDirectory, fileName);
-        var targetSignature = Path.Combine(_paksDirectory, Path.ChangeExtension(fileName, ".sig"));
-        if (hasSignature && File.Exists(targetSignature))
+        var targetPak = isDisabledPak ? GetDisabledPath(fileName) : Path.Combine(_paksDirectory, fileName);
+        var signatureName = Path.ChangeExtension(fileName, ".sig");
+        var targetSignature = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
+        if (hasSignature &&
+            (File.Exists(Path.Combine(_paksDirectory, signatureName)) || File.Exists(GetDisabledPath(signatureName))))
         {
             throw new IOException($"A signature file already exists: {Path.GetFileName(targetSignature)}");
         }
@@ -802,11 +807,17 @@ internal sealed class MainForm : Form
             return false;
         }
 
-        var sourceSignature = GetSourceSignaturePath(
-            sourcePath,
-            IsDisabledPakPath(sourcePath));
+        var isDisabledPak = IsDisabledPakPath(sourcePath);
+        var sourceSignature = GetSourceSignaturePath(sourcePath, isDisabledPak);
         var hasSourceSignature = File.Exists(sourceSignature);
-        var targetSignature = Path.Combine(_paksDirectory, Path.ChangeExtension(mod.FileName, ".sig"));
+        var targetPak = isDisabledPak ? renamedDisabledPak : activePak;
+        var signatureName = Path.ChangeExtension(mod.FileName, ".sig");
+        var targetSignature = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
+        var otherSignature = isDisabledPak ? Path.Combine(_paksDirectory, signatureName) : GetDisabledPath(signatureName);
+        if (File.Exists(otherSignature))
+        {
+            throw new IOException($"A signature file in the opposite enabled state already exists: {Path.GetFileName(otherSignature)}");
+        }
         var hasTargetSignature = File.Exists(targetSignature);
         if (hasSourceSignature && hasTargetSignature)
         {
@@ -827,8 +838,8 @@ internal sealed class MainForm : Form
         var previousHasSignature = mod.HasSignature;
         try
         {
-            File.Copy(sourcePath, activePak, overwrite: false);
-            copiedFiles.Add(activePak);
+            File.Copy(sourcePath, targetPak, overwrite: false);
+            copiedFiles.Add(targetPak);
             if (hasSourceSignature)
             {
                 File.Copy(sourceSignature, targetSignature, overwrite: false);
@@ -858,6 +869,10 @@ internal sealed class MainForm : Form
         var normalizedPath = pakEntry.FullName.Replace('\\', '/');
         var directory = Path.GetDirectoryName(normalizedPath)?.Replace('\\', '/') ?? "";
         var signatureName = Path.ChangeExtension(pakFileName, ".sig");
+        if (IsDisabledPakPath(normalizedPath))
+        {
+            signatureName += ".disabled";
+        }
         var fullSignaturePath = string.IsNullOrEmpty(directory) ? signatureName : $"{directory}/{signatureName}";
         return archive.Entries.FirstOrDefault(entry =>
             entry.FullName.Replace('\\', '/').Equals(fullSignaturePath, StringComparison.OrdinalIgnoreCase));
@@ -1274,7 +1289,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void RefreshModList(bool preserveDesiredStates = false, ISet<string>? enabledOverrides = null)
+    private void RefreshModList(bool preserveDesiredStates = false, IReadOnlyDictionary<string, bool>? stateOverrides = null)
     {
         var desiredStates = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         if (preserveDesiredStates)
@@ -1288,6 +1303,14 @@ internal sealed class MainForm : Form
             }
         }
 
+        if (stateOverrides is not null)
+        {
+            foreach (var (fileName, enabled) in stateOverrides)
+            {
+                desiredStates[fileName] = enabled;
+            }
+        }
+
         _initializing = true;
         _modList.BeginUpdate();
         try
@@ -1296,10 +1319,9 @@ internal sealed class MainForm : Form
             foreach (var mod in _mods.OrderBy(mod => mod.DisplayName, StringComparer.OrdinalIgnoreCase))
             {
                 var item = new ListViewItem(mod.DisplayName) { Tag = mod.FileName };
-                item.Checked = enabledOverrides?.Contains(mod.FileName) == true ||
-                    (desiredStates.TryGetValue(mod.FileName, out var shouldBeEnabled)
-                        ? shouldBeEnabled
-                        : File.Exists(Path.Combine(_paksDirectory, mod.FileName)));
+                item.Checked = desiredStates.TryGetValue(mod.FileName, out var shouldBeEnabled)
+                    ? shouldBeEnabled
+                    : File.Exists(Path.Combine(_paksDirectory, mod.FileName));
                 item.SubItems.Add(GetModStatus(mod));
                 _modList.Items.Add(item);
             }
