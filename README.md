@@ -1,7 +1,7 @@
 # Redout 2 Mod Manager
 
 A standalone Windows GUI for managing `.pak` mods in Redout 2.
-The interface uses Redout 2's black, white, and blue (`#4054B2`) brand palette.
+
 Action buttons use equal-width columns, consistent heights and spacing, and an aligned game-folder field that resizes with the window.
 
 ## Features
