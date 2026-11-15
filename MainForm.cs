@@ -87,29 +87,48 @@ internal sealed class MainForm : Form
         _modList.SelectedIndexChanged += (_, _) => UpdateSelectionButtons();
         _modList.DoubleClick += (_, _) => OpenModFolder();
 
-        var actions = new FlowLayoutPanel
+        var actions = new TableLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 96,
-            Padding = new Padding(18, 6, 12, 4),
+            Height = 64,
+            Padding = new Padding(20, 12, 20, 12),
             BackColor = BackgroundColor,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true
+            ColumnCount = 6,
+            RowCount = 1
         };
-        actions.Controls.Add(CreateButton("Import Mods...", new Size(135, 30), ImportMods));
-        actions.Controls.Add(CreateButton("Refresh Mod List", new Size(150, 30), RefreshMods));
-        actions.Controls.Add(CreateButton("Toggle All", new Size(100, 30), ToggleAllMods));
-        _applyChangesButton = CreateButton("Apply Changes", new Size(120, 30), ApplyModChanges);
+        for (var column = 0; column < actions.ColumnCount; column++)
+        {
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute));
+        }
+        actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        actions.Controls.Add(CreateButton("Import Mods...", ImportMods));
+        actions.Controls.Add(CreateButton("Refresh Mod List", RefreshMods));
+        actions.Controls.Add(CreateButton("Toggle All", ToggleAllMods));
+        _applyChangesButton = CreateButton("Apply Changes", ApplyModChanges);
         _applyChangesButton.Enabled = false;
         actions.Controls.Add(_applyChangesButton);
-        _removeButton = CreateButton("Uninstall", new Size(100, 30), UninstallSelectedMods);
+        _removeButton = CreateButton("Uninstall", UninstallSelectedMods);
         actions.Controls.Add(_removeButton);
-        actions.Controls.Add(CreateButton("Mod Folder", new Size(120, 30), OpenModFolder));
+        actions.Controls.Add(CreateButton("Mod Folder", OpenModFolder));
+        foreach (Control button in actions.Controls)
+        {
+            button.Dock = DockStyle.Fill;
+        }
+        actions.Resize += (_, _) =>
+        {
+            var availableWidth = Math.Max(0, actions.ClientSize.Width - actions.Padding.Horizontal);
+            var columnWidth = availableWidth / actions.ColumnCount;
+            var extraPixels = availableWidth % actions.ColumnCount;
+            for (var column = 0; column < actions.ColumnCount; column++)
+            {
+                actions.ColumnStyles[column].Width = columnWidth + (column < extraPixels ? 1 : 0);
+            }
+        };
 
         var header = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 212,
+            Height = 224,
             BackColor = BackgroundColor
         };
         var title = new Label
@@ -118,19 +137,21 @@ internal sealed class MainForm : Form
             Font = new Font("Segoe UI", 18, FontStyle.Bold),
             ForeColor = TextColor,
             Location = new Point(24, 16),
-            Size = new Size(480, 36)
+            Size = new Size(480, 36),
+            AutoEllipsis = true
         };
         header.Controls.Add(title);
         var subtitle = new Label
         {
             Text = "Install and toggle managed PAK mods. Game files are left untouched.",
             ForeColor = MutedColor,
-            Location = new Point(26, 54),
-            Size = new Size(680, 22)
+            Location = new Point(24, 56),
+            Size = new Size(680, 22),
+            AutoEllipsis = true
         };
         header.Controls.Add(subtitle);
 
-        var nexusButton = CreateButton("Nexus Mods", new Size(150, 32), OpenNexusPage);
+        var nexusButton = CreateButton("Nexus Mods", OpenNexusPage);
         nexusButton.Image = LoadButtonIcon(
             "Redout2ModManager.Assets.nexus-mods.png",
             new Size(22, 22),
@@ -139,10 +160,10 @@ internal sealed class MainForm : Form
         nexusButton.TextImageRelation = TextImageRelation.ImageBeforeText;
         nexusButton.Padding = new Padding(12, 0, 0, 0);
         nexusButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        nexusButton.Location = new Point(Width - 190, 18);
+        nexusButton.Location = new Point(Width - 190, 16);
         header.Controls.Add(nexusButton);
 
-        var gameBananaButton = CreateButton("GameBanana", new Size(150, 32), () => OpenUrl(GameBananaPage));
+        var gameBananaButton = CreateButton("GameBanana", () => OpenUrl(GameBananaPage));
         gameBananaButton.Image = LoadButtonIcon(
             "Redout2ModManager.Assets.gamebanana.png",
             new Size(22, 22));
@@ -153,7 +174,7 @@ internal sealed class MainForm : Form
         gameBananaButton.Location = new Point(Width - 190, 56);
         header.Controls.Add(gameBananaButton);
 
-        var startButton = CreateButton("Start Game", new Size(150, 32), StartGame);
+        var startButton = CreateButton("Start Game", StartGame);
         startButton.Image = LoadButtonIcon(
             "Redout2ModManager.Assets.redout2-steam.jpg",
             new Size(22, 22));
@@ -161,24 +182,17 @@ internal sealed class MainForm : Form
         startButton.TextImageRelation = TextImageRelation.ImageBeforeText;
         startButton.Padding = new Padding(12, 0, 0, 0);
         startButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        startButton.Location = new Point(Width - 190, 94);
+        startButton.Location = new Point(Width - 190, 96);
         startButton.BackColor = AccentColor;
         startButton.ForeColor = TextColor;
         startButton.FlatAppearance.BorderSize = 0;
         startButton.FlatAppearance.MouseOverBackColor = AccentHoverColor;
         header.Controls.Add(startButton);
-        header.Resize += (_, _) =>
-        {
-            nexusButton.Left = header.ClientSize.Width - nexusButton.Width - 24;
-            gameBananaButton.Left = header.ClientSize.Width - gameBananaButton.Width - 24;
-            startButton.Left = header.ClientSize.Width - startButton.Width - 24;
-        };
-
         var pathLabel = new Label
         {
             Text = "GAME FOLDER",
             ForeColor = MutedColor,
-            Location = new Point(26, 136),
+            Location = new Point(24, 136),
             Size = new Size(130, 20)
         };
         header.Controls.Add(pathLabel);
@@ -186,26 +200,32 @@ internal sealed class MainForm : Form
         _gamePathBox.BackColor = PanelColor;
         _gamePathBox.ForeColor = TextColor;
         _gamePathBox.BorderStyle = BorderStyle.FixedSingle;
+        _gamePathBox.AutoSize = false;
         _gamePathBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _gamePathBox.Location = new Point(26, 160);
-        _gamePathBox.Size = new Size(Width - 250, 28);
+        _gamePathBox.Location = new Point(24, 160);
+        _gamePathBox.Size = new Size(Width - 250, 32);
         header.Controls.Add(_gamePathBox);
 
-        var browseButton = CreateButton("Browse...", new Size(150, 32), BrowseForGameFolder);
+        var browseButton = CreateButton("Browse...", BrowseForGameFolder);
         browseButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        browseButton.Location = new Point(Width - 190, 158);
+        browseButton.Location = new Point(Width - 190, 160);
         header.Controls.Add(browseButton);
-        header.Resize += (_, _) =>
-        {
-            _gamePathBox.Width = header.ClientSize.Width - _gamePathBox.Left - browseButton.Width - 40;
-            browseButton.Left = header.ClientSize.Width - browseButton.Width - 24;
-        };
-
         _statusLabel.ForeColor = MutedColor;
-        _statusLabel.Location = new Point(26, 190);
+        _statusLabel.Location = new Point(24, 200);
         _statusLabel.Size = new Size(850, 20);
         _statusLabel.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
         header.Controls.Add(_statusLabel);
+        header.Resize += (_, _) =>
+        {
+            nexusButton.Left = header.ClientSize.Width - nexusButton.Width - 24;
+            gameBananaButton.Left = nexusButton.Left;
+            startButton.Left = nexusButton.Left;
+            browseButton.Left = nexusButton.Left;
+            title.Width = Math.Max(0, nexusButton.Left - title.Left - 16);
+            subtitle.Width = Math.Max(0, nexusButton.Left - subtitle.Left - 16);
+            _gamePathBox.Width = Math.Max(0, browseButton.Left - _gamePathBox.Left - 16);
+            _statusLabel.Width = Math.Max(0, header.ClientSize.Width - _statusLabel.Left - 24);
+        };
 
         Controls.Add(_modList);
         Controls.Add(actions);
@@ -306,12 +326,12 @@ internal sealed class MainForm : Form
         return image;
     }
 
-    private static Button CreateButton(string text, Size size, Action action)
+    private static Button CreateButton(string text, Action action)
     {
         var button = new Button
         {
             Text = text,
-            Size = size,
+            Size = new Size(150, 32),
             BackColor = ButtonColor,
             ForeColor = TextColor,
             FlatStyle = FlatStyle.Flat,
@@ -610,7 +630,13 @@ internal sealed class MainForm : Form
                 }
                 else if (extension.Equals(".zip", StringComparison.OrdinalIgnoreCase))
                 {
-                    imported += InstallArchive(path);
+                    var result = InstallArchive(path);
+                    imported += result.Imported;
+                    alreadyManaged += result.AlreadyManaged;
+                    foreach (var (fileName, enabled) in result.RestoredStates)
+                    {
+                        restoredMods[fileName] = enabled;
+                    }
                 }
                 else
                 {
@@ -628,7 +654,7 @@ internal sealed class MainForm : Form
         {
             SetStatus(imported == 0
                 ? $"No new mods imported; already managed: {alreadyManaged}."
-                : $"Imported or restored {imported} mod(s).");
+                : $"Imported or restored {imported} mod(s); already managed: {alreadyManaged}.");
             return;
         }
 
@@ -641,7 +667,7 @@ internal sealed class MainForm : Form
             MessageBoxIcon.Warning);
     }
 
-    private int InstallArchive(string archivePath)
+    private (int Imported, int AlreadyManaged, Dictionary<string, bool> RestoredStates) InstallArchive(string archivePath)
     {
         using var archive = ZipFile.OpenRead(archivePath);
         var pakEntries = archive.Entries
@@ -654,6 +680,8 @@ internal sealed class MainForm : Form
 
         var filesToCopy = new List<(ZipArchiveEntry Entry, string Target)>();
         var newMods = new List<ModEntry>();
+        var restoredMods = new List<(ModEntry Mod, bool PreviousHasSignature, bool HasSignature, bool Enabled)>();
+        var alreadyManaged = 0;
         var fileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pakEntry in pakEntries)
         {
@@ -668,26 +696,54 @@ internal sealed class MainForm : Form
             {
                 throw new InvalidDataException($"The ZIP contains multiple PAKs with the same filename: {fileName}");
             }
-            EnsureNotRegisteredOrInstalled(fileName);
-
-            filesToCopy.Add((pakEntry, isDisabledPak ? GetDisabledPath(fileName) : Path.Combine(_paksDirectory, fileName)));
-            var signatureEntry = FindSignatureEntry(archive, pakEntry, fileName);
-            if (signatureEntry is not null)
+            var managedMod = _mods.FirstOrDefault(mod =>
+                mod.FileName.Equals(fileName, StringComparison.OrdinalIgnoreCase));
+            if (managedMod is not null)
             {
-                var signatureName = Path.ChangeExtension(fileName, ".sig");
-                var signatureTarget = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
-                if (File.Exists(Path.Combine(_paksDirectory, signatureName)) || File.Exists(GetDisabledPath(signatureName)))
+                if (IsManagedPakInstalled(managedMod))
+                {
+                    alreadyManaged++;
+                    continue;
+                }
+                fileName = managedMod.FileName;
+            }
+            else
+            {
+                EnsureNotRegisteredOrInstalled(fileName);
+            }
+
+            var signatureEntry = FindSignatureEntry(archive, pakEntry, fileName);
+            var signatureName = Path.ChangeExtension(fileName, ".sig");
+            var signatureTarget = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
+            if (managedMod is not null)
+            {
+                var hasSignature = ValidateRestoredSignature(managedMod, isDisabledPak, signatureEntry is not null);
+                restoredMods.Add((managedMod, managedMod.HasSignature, hasSignature, !isDisabledPak));
+            }
+            else
+            {
+                if (signatureEntry is not null &&
+                    (File.Exists(Path.Combine(_paksDirectory, signatureName)) || File.Exists(GetDisabledPath(signatureName))))
                 {
                     throw new IOException($"A signature file already exists: {Path.GetFileName(signatureTarget)}");
                 }
+                newMods.Add(new ModEntry
+                {
+                    FileName = fileName,
+                    DisplayName = Path.GetFileNameWithoutExtension(fileName),
+                    HasSignature = signatureEntry is not null
+                });
+            }
+            filesToCopy.Add((pakEntry, isDisabledPak ? GetDisabledPath(fileName) : Path.Combine(_paksDirectory, fileName)));
+            if (signatureEntry is not null)
+            {
                 filesToCopy.Add((signatureEntry, signatureTarget));
             }
-            newMods.Add(new ModEntry
-            {
-                FileName = fileName,
-                DisplayName = Path.GetFileNameWithoutExtension(fileName),
-                HasSignature = signatureEntry is not null
-            });
+        }
+
+        if (filesToCopy.Count == 0)
+        {
+            return (0, alreadyManaged, new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
         }
 
         var createdFiles = new List<string>();
@@ -700,6 +756,10 @@ internal sealed class MainForm : Form
             }
 
             _mods.AddRange(newMods);
+            foreach (var restoredMod in restoredMods)
+            {
+                restoredMod.Mod.HasSignature = restoredMod.HasSignature;
+            }
             SaveManifest();
         }
         catch
@@ -707,6 +767,10 @@ internal sealed class MainForm : Form
             foreach (var mod in newMods)
             {
                 _mods.Remove(mod);
+            }
+            foreach (var restoredMod in restoredMods)
+            {
+                restoredMod.Mod.HasSignature = restoredMod.PreviousHasSignature;
             }
             foreach (var path in createdFiles)
             {
@@ -717,7 +781,8 @@ internal sealed class MainForm : Form
             }
             throw;
         }
-        return newMods.Count;
+        return (newMods.Count + restoredMods.Count, alreadyManaged,
+            restoredMods.ToDictionary(mod => mod.Mod.FileName, mod => mod.Enabled, StringComparer.OrdinalIgnoreCase));
     }
 
     private bool ImportPak(string sourcePath)
@@ -789,7 +854,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private bool RestoreManagedPak(ModEntry mod, string sourcePath)
+    private bool IsManagedPakInstalled(ModEntry mod)
     {
         var activePak = Path.Combine(_paksDirectory, mod.FileName);
         var renamedDisabledPak = GetDisabledPath(mod.FileName);
@@ -802,15 +867,11 @@ internal sealed class MainForm : Form
         {
             throw new IOException($"'{mod.FileName}' has conflicting enabled and disabled copies. Resolve the conflict before importing it.");
         }
-        if (isActive || isRenamedDisabled || isLegacyDisabled)
-        {
-            return false;
-        }
+        return isActive || isRenamedDisabled || isLegacyDisabled;
+    }
 
-        var isDisabledPak = IsDisabledPakPath(sourcePath);
-        var sourceSignature = GetSourceSignaturePath(sourcePath, isDisabledPak);
-        var hasSourceSignature = File.Exists(sourceSignature);
-        var targetPak = isDisabledPak ? renamedDisabledPak : activePak;
+    private bool ValidateRestoredSignature(ModEntry mod, bool isDisabledPak, bool hasSourceSignature)
+    {
         var signatureName = Path.ChangeExtension(mod.FileName, ".sig");
         var targetSignature = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
         var otherSignature = isDisabledPak ? Path.Combine(_paksDirectory, signatureName) : GetDisabledPath(signatureName);
@@ -827,12 +888,29 @@ internal sealed class MainForm : Form
         {
             throw new FileNotFoundException(
                 $"'{mod.FileName}' requires its matching .sig file. Import the PAK and signature together.",
-                sourceSignature);
+                targetSignature);
         }
         if (!mod.HasSignature && hasTargetSignature)
         {
             throw new IOException($"A signature file already exists: {Path.GetFileName(targetSignature)}");
         }
+        return hasSourceSignature || hasTargetSignature;
+    }
+
+    private bool RestoreManagedPak(ModEntry mod, string sourcePath)
+    {
+        if (IsManagedPakInstalled(mod))
+        {
+            return false;
+        }
+
+        var isDisabledPak = IsDisabledPakPath(sourcePath);
+        var sourceSignature = GetSourceSignaturePath(sourcePath, isDisabledPak);
+        var hasSourceSignature = File.Exists(sourceSignature);
+        var targetPak = isDisabledPak ? GetDisabledPath(mod.FileName) : Path.Combine(_paksDirectory, mod.FileName);
+        var signatureName = Path.ChangeExtension(mod.FileName, ".sig");
+        var targetSignature = isDisabledPak ? GetDisabledPath(signatureName) : Path.Combine(_paksDirectory, signatureName);
+        var hasSignature = ValidateRestoredSignature(mod, isDisabledPak, hasSourceSignature);
 
         var copiedFiles = new List<string>();
         var previousHasSignature = mod.HasSignature;
@@ -846,7 +924,7 @@ internal sealed class MainForm : Form
                 copiedFiles.Add(targetSignature);
             }
 
-            mod.HasSignature = hasSourceSignature || hasTargetSignature;
+            mod.HasSignature = hasSignature;
             SaveManifest();
             return true;
         }
