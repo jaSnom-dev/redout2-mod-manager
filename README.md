@@ -30,7 +30,7 @@ DML has its own in-game LogicMod list, separate from ordinary PAK file presence.
 
 ## Run
 
-Run [`publish-compressed\Redout2ModManager.exe`](./publish-compressed/Redout2ModManager.exe). It is self-contained and does not require a separate .NET runtime.
+Download `Redout2ModManager.exe` from the [latest release](https://github.com/jaSnom-dev/redout2-mod-manager/releases/latest) and run it. It is self-contained and does not require a separate .NET runtime.
 
 The default Steam install guess is:
 
