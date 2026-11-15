@@ -10,6 +10,7 @@
     <RootNamespace>Redout2ModManager</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="Unix\**\*.cs" />
     <PackageReference Include="CUE4Parse" Version="1.2.2.202611" />
     <PackageReference Include="Microsoft.Bcl.Memory" Version="9.0.14" />
     <EmbeddedResource Include="Assets\nexus-mods.png" LogicalName="Redout2ModManager.Assets.nexus-mods.png" />

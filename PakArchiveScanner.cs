@@ -10,7 +10,8 @@ internal static class PakArchiveScanner
 
     public static List<string> Scan(string pakPath)
     {
-        using var reader = new PakFileReader(pakPath, new VersionContainer(EGame.GAME_UE4_27));
+        using var stream = File.Open(pakPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new PakFileReader(pakPath, stream, new VersionContainer(EGame.GAME_UE4_27));
         if (reader.Info.IndexSize > MaximumIndexSize)
         {
             throw new InvalidDataException(

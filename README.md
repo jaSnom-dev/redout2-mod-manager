@@ -1,9 +1,9 @@
 # Redout 2 Mod Manager
 
-A standalone Windows GUI for managing `.pak` mods in Redout 2.
+A desktop GUI for managing `.pak` mods in Redout 2, with a Windows application and an experimental Linux port.
 The header and window title show the build version so different executables are easy to identify.
 
-Action buttons use equal-width columns, consistent heights and spacing, and an aligned game-folder field that resizes with the window.
+The Windows interface uses equal-width action buttons and an aligned, resizable game-folder field.
 
 ## Features
 
@@ -14,7 +14,7 @@ Action buttons use equal-width columns, consistent heights and spacing, and an a
 - Drag and drop PAK files or ZIP archives onto the window to import them. External PAKs are copied into the game folder; source files are left untouched.
 - Check mods individually or use **Toggle All** to check all mods, or uncheck them when all are checked, then use **Apply Changes** to toggle their enabled state. Disabling renames files in place to `.pak.disabled` and `.sig.disabled`; enabling restores their original names.
 - Refresh the managed list and file statuses with **Refresh Mod List**. It removes entries whose enabled and disabled PAK files are both gone. Imports are added automatically; arbitrary game PAK files are not auto-registered.
-- Recognize mods disabled by previous versions in `%LOCALAPPDATA%\Redout2ModManager` and restore them to the game folder when enabled.
+- Recognize mods disabled by previous Windows versions in `%LOCALAPPDATA%\Redout2ModManager` and restore them to the game folder when enabled.
 - Uninstall registered mods, open the game Paks folder (including disabled files) with **Mod Folder**, open the Redout 2 Nexus page, join the [official 34BigThings Discord](https://discord.com/invite/redout), and launch the game through Steam.
 - Remember the selected game folder and each installation's managed mod list.
 - Show the Nexus Mods, GameBanana, Discord, and Redout 2 icons on their matching buttons; all are embedded in the executable.
@@ -37,7 +37,7 @@ The manager reports possible overlaps only among enabled, managed mods; it does 
 
 DML has its own in-game LogicMod list, separate from ordinary PAK file presence. The manager does not change that list. Open the game's DML console with **Home** and use `dml list`, `dml add <name>`, or `dml remove <name>`. See the [DML page on Nexus Mods](https://www.nexusmods.com/redout2/mods/6).
 
-## Run
+## Run on Windows
 
 Download `Redout2ModManager.exe` from the [latest release](https://github.com/jaSnom-dev/redout2-mod-manager/releases/latest) and run it. It is self-contained and does not require a separate .NET runtime.
 
@@ -47,7 +47,28 @@ The default Steam install guess is:
 
 The manager searches Steam's registered library folders for Redout 2 on startup and selects it automatically when found. Use **Browse...** only if it cannot detect the installation. You can choose the top-level install folder, its `redout2` or `Content` subfolder, or the `Content\Paks` folder itself.
 
-## Build / publish
+## Linux port
+
+See the [Linux port README](./Unix/README.md) for detailed setup and usage instructions.
+
+The `Unix` project provides an Avalonia desktop interface for Linux. It can discover Steam libraries, import and manage PAK and ZIP mods, scan PAK indexes, and show conflict details. Select the game folder manually if Steam discovery does not find it. Steam's standard, `~/.local/share/Steam`, and Flatpak locations are searched.
+
+The Linux port keeps its own settings and mod manifests in the .NET local application data directory (normally `~/.local/share/Redout2ModManager`, or under `XDG_DATA_HOME`). It does not automatically migrate the Windows manager's mod list or legacy disabled files. Files already in the game's Paks folder can be registered using **Import Mods...**.
+
+From the project root, build or publish using the .NET 10 SDK:
+
+```sh
+dotnet build Unix/Redout2ModManager.Unix.csproj -c Release
+dotnet publish Unix/Redout2ModManager.Unix.csproj -c Release -r linux-x64 --self-contained true -o Unix/publish-linux-x64
+chmod +x Unix/publish-linux-x64/Redout2ModManager.Unix
+Unix/publish-linux-x64/Redout2ModManager.Unix
+```
+
+Keep the published files together. A graphical Linux desktop and its native Avalonia dependencies are required; Steam must be installed to launch the game through the Steam button. The self-contained publish includes .NET but does not install desktop system libraries. On a minimal Ubuntu 24.04 installation, these include `libicu74`, `libfontconfig1`, `libx11-6`, `libice6`, and `libsm6`.
+
+The port is experimental. Its integration checks and a window-startup smoke test passed under Ubuntu 24.04 on WSL with a virtual display, but it has not been tested in-game or on a full Linux desktop. macOS and other Unix platforms have not been tested.
+
+## Build / publish on Windows
 
 Requires the .NET 10 SDK on Windows:
 
