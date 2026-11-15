@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Reflection;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
@@ -11,16 +13,27 @@ namespace Redout2ModManager.Unix;
 
 internal sealed class MainWindow : Window
 {
-    private readonly ModManager _manager = new();
+    private readonly ModManager _manager;
     private readonly TextBlock _gamePath = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly StackPanel _rows = new() { Spacing = 5 };
     private readonly Dictionary<string, CheckBox> _checks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Grid _content = new();
+    private readonly List<string> _order = [];
+    private readonly Button _moveUp;
+    private readonly Button _moveDown;
+    private readonly Button _applyOrder;
+    private string? _selectedMod;
+    private bool _loadOrderPending;
 
-    public MainWindow()
+    public MainWindow() : this(new ModManager()) { }
+
+    internal MainWindow(ModManager manager)
     {
-        Title = "Redout 2 Mod Manager v1.0.7";
+        _manager = manager;
+        var version = typeof(MainWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion.Split('+')[0];
+        Title = $"Redout 2 Mod Manager v{version}";
         Width = 1000;
         Height = 700;
         MinWidth = 720;
@@ -44,7 +57,7 @@ internal sealed class MainWindow : Window
         Add(gamePanel, 1);
 
         var listPanel = new Grid { RowDefinitions = new RowDefinitions("Auto,*") };
-        listPanel.Children.Add(new TextBlock { Text = "Mod list    |    Status    |    Potential conflicts", FontWeight = FontWeight.Bold });
+        listPanel.Children.Add(new TextBlock { Text = "Select a mod to change its order. Checkboxes control enabled state.", FontWeight = FontWeight.Bold });
         var scroll = new ScrollViewer { Content = _rows, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto };
         Grid.SetRow(scroll, 1);
         listPanel.Children.Add(scroll);
@@ -65,6 +78,13 @@ internal sealed class MainWindow : Window
             SetStatus("Mod changes applied.");
         })));
         actions.Children.Add(MakeButton("Scan PAKs", async () => await Scan()));
+        actions.Children.Add(MakeButton("Conflict List", async () => await ShowConflictList()));
+        _moveUp = MakeButton("Move Up", () => MoveSelected(-1));
+        _moveDown = MakeButton("Move Down", () => MoveSelected(1));
+        _applyOrder = MakeButton("Apply Load Order", async () => await ApplyLoadOrder());
+        actions.Children.Add(_moveUp);
+        actions.Children.Add(_moveDown);
+        actions.Children.Add(_applyOrder);
         actions.Children.Add(MakeButton("Mod Folder", () => Open(_manager.PaksDirectory)));
         actions.Children.Add(MakeLinkButton("Start Game", "redout2-steam.jpg", () => Open("steam://rungameid/1799930")));
         actions.Children.Add(MakeLinkButton("Nexus Mods", "nexus-mods.png", () => Open("https://www.nexusmods.com/redout2")));
@@ -72,6 +92,7 @@ internal sealed class MainWindow : Window
         actions.Children.Add(MakeLinkButton("Discord", "discord-icon.png", () => Open("https://discord.com/invite/redout")));
         Add(actions, 3);
         Add(_status, 4);
+        UpdateOrderButtons();
         Content = _content;
         DragDrop.SetAllowDrop(_content, true);
         _content.AddHandler(DragDrop.DragOverEvent, (_, e) =>
@@ -147,7 +168,16 @@ internal sealed class MainWindow : Window
             if (folders.Count == 0) return;
             var path = folders[0].TryGetLocalPath();
             if (path is null) { await ShowMessage("The selected folder is not a local filesystem path."); return; }
-            Run(() => { _manager.SelectGame(path); RefreshRows(); SetStatus("Game folder selected."); });
+            Run(() =>
+            {
+                _manager.SelectGame(path);
+                _order.Clear();
+                _checks.Clear();
+                _selectedMod = null;
+                _loadOrderPending = false;
+                RefreshRows();
+                SetStatus("Game folder selected.");
+            });
         }
         catch (Exception ex) { SetStatus(ex.Message); await ShowMessage(ex.Message); }
     }
@@ -200,37 +230,156 @@ internal sealed class MainWindow : Window
         finally { _content.IsEnabled = true; }
     }
 
-    private void RefreshRows()
+    private void RefreshRows(IReadOnlyDictionary<string, bool>? stateOverrides = null)
     {
+        var previousChecks = _checks.ToDictionary(pair => pair.Key, pair => pair.Value.IsChecked == true,
+            StringComparer.OrdinalIgnoreCase);
+        if (stateOverrides is not null)
+            foreach (var (name, enabled) in stateOverrides) previousChecks[name] = enabled;
+        var rows = _manager.GetRows();
+        var byName = rows.ToDictionary(row => row.FileName, StringComparer.OrdinalIgnoreCase);
+        if (_loadOrderPending)
+        {
+            _order.RemoveAll(name => !byName.ContainsKey(name));
+            foreach (var row in rows)
+                if (!_order.Contains(row.FileName, StringComparer.OrdinalIgnoreCase)) _order.Add(row.FileName);
+            _loadOrderPending = !_order.SequenceEqual(rows.Select(row => row.FileName), StringComparer.OrdinalIgnoreCase);
+        }
+        else
+        {
+            _order.Clear();
+            _order.AddRange(rows.Select(row => row.FileName));
+        }
+        if (_selectedMod is not null && !byName.ContainsKey(_selectedMod)) _selectedMod = null;
         _gamePath.Text = _manager.GameDirectory;
         _rows.Children.Clear();
         _checks.Clear();
-        foreach (var row in _manager.GetRows())
+        foreach (var name in _order)
         {
-            var panel = new Grid { ColumnDefinitions = new ColumnDefinitions("*,150,150,Auto,Auto") };
-            var check = new CheckBox { Content = row.DisplayName, IsChecked = row.Enabled, VerticalAlignment = VerticalAlignment.Center };
+            var row = byName[name];
+            var panel = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,220,130,320,Auto,Auto") };
+            var select = new RadioButton
+            {
+                GroupName = "LoadOrderSelection",
+                IsChecked = string.Equals(_selectedMod, row.FileName, StringComparison.OrdinalIgnoreCase),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            AutomationProperties.SetName(select, $"Select {row.DisplayName} for load order");
+            select.Click += (_, _) => { _selectedMod = row.FileName; UpdateOrderButtons(); };
+            panel.Children.Add(select);
+            var check = new CheckBox
+            {
+                Content = row.DisplayName,
+                IsChecked = previousChecks.TryGetValue(row.FileName, out var enabled) ? enabled : row.Enabled,
+                VerticalAlignment = VerticalAlignment.Center
+            };
             _checks.Add(row.FileName, check);
+            Grid.SetColumn(check, 1);
             panel.Children.Add(check);
             var status = new TextBlock { Text = row.Status, VerticalAlignment = VerticalAlignment.Center };
-            Grid.SetColumn(status, 1);
+            Grid.SetColumn(status, 2);
             panel.Children.Add(status);
-            var conflicts = new TextBlock { Text = row.Conflicts, VerticalAlignment = VerticalAlignment.Center };
+            var conflicts = new TextBlock
+            {
+                Text = row.Conflicts,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = row.HasConflicts ? Brushes.Orange : Foreground
+            };
             ToolTip.SetTip(conflicts, row.Details);
-            Grid.SetColumn(conflicts, 2);
+            Grid.SetColumn(conflicts, 3);
             panel.Children.Add(conflicts);
             var details = MakeButton("Details", async () => await ShowMessage(row.Details));
-            Grid.SetColumn(details, 3);
+            Grid.SetColumn(details, 4);
             panel.Children.Add(details);
             var uninstall = MakeButton("Uninstall", async () =>
             {
-                if (!await Confirm($"Uninstall {row.DisplayName}? This deletes its managed PAK and signature."))
+                if (!await Confirm($"Uninstall {row.DisplayName}? This deletes its managed PAK and signature.", "Uninstall"))
                     return;
                 Run(() => { _manager.Uninstall(row.FileName); RefreshRows(); SetStatus($"Uninstalled {row.DisplayName}."); });
             });
-            Grid.SetColumn(uninstall, 4);
+            Grid.SetColumn(uninstall, 5);
             panel.Children.Add(uninstall);
             _rows.Children.Add(panel);
         }
+        UpdateOrderButtons();
+    }
+
+    private void UpdateOrderButtons()
+    {
+        var index = _selectedMod is null ? -1 : _order.FindIndex(name =>
+            name.Equals(_selectedMod, StringComparison.OrdinalIgnoreCase));
+        _moveUp.IsEnabled = index > 0;
+        _moveDown.IsEnabled = index >= 0 && index < _order.Count - 1;
+        _applyOrder.IsEnabled = _loadOrderPending;
+    }
+
+    private void MoveSelected(int direction)
+    {
+        var index = _selectedMod is null ? -1 : _order.FindIndex(name =>
+            name.Equals(_selectedMod, StringComparison.OrdinalIgnoreCase));
+        var target = index + direction;
+        if (index < 0 || target < 0 || target >= _order.Count) return;
+        (_order[index], _order[target]) = (_order[target], _order[index]);
+        _loadOrderPending = !_order.SequenceEqual(_manager.GetRows().Select(row => row.FileName), StringComparer.OrdinalIgnoreCase);
+        RefreshRows();
+        SetStatus(_loadOrderPending ? "Order staged; use Apply Load Order to rename the files." : "Mod order unchanged.");
+    }
+
+    private async Task ApplyLoadOrder()
+    {
+        if (!_loadOrderPending) return;
+        if (!await Confirm("Applying this order renames all managed PAKs and their matching signatures with numbered prefixes. " +
+            "Existing numbered prefixes will be replaced. Game load precedence has not been verified, " +
+            "so the numbering may not control which mod wins. Continue?", "Apply Load Order"))
+            return;
+        try
+        {
+            var desired = _checks.ToDictionary(pair => pair.Key, pair => pair.Value.IsChecked == true,
+                StringComparer.OrdinalIgnoreCase);
+            var renamed = _manager.ApplyLoadOrder(_order);
+            var states = desired.ToDictionary(pair => renamed[pair.Key], pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            if (_selectedMod is not null) _selectedMod = renamed[_selectedMod];
+            _loadOrderPending = false;
+            RefreshRows(states);
+            SetStatus("Renamed managed mods in the selected order. Game load precedence is unverified.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus(ex.Message);
+            await ShowMessage(ex.Message);
+        }
+    }
+
+    private async Task ShowConflictList()
+    {
+        try
+        {
+            var report = new TextBox
+            {
+                Text = _manager.BuildConflictList(),
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.NoWrap
+            };
+            var dialog = new Window
+            {
+                Title = "Potential archive conflicts",
+                Width = 850,
+                Height = 600,
+                MinWidth = 500,
+                MinHeight = 300,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner
+            };
+            var layout = new Grid { RowDefinitions = new RowDefinitions("*,Auto"), Margin = new Thickness(20) };
+            layout.Children.Add(report);
+            var close = MakeButton("Close", () => dialog.Close());
+            Grid.SetRow(close, 1);
+            layout.Children.Add(close);
+            dialog.Content = layout;
+            await dialog.ShowDialog(this);
+        }
+        catch (Exception ex) { SetStatus(ex.Message); await ShowMessage(ex.Message); }
     }
 
     private void Run(Action action)
@@ -261,12 +410,12 @@ internal sealed class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
-    private async Task<bool> Confirm(string text)
+    private async Task<bool> Confirm(string text, string confirmLabel)
     {
         var dialog = CreateDialog(text);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal };
         buttons.Children.Add(MakeButton("Cancel", () => dialog.Close(false)));
-        buttons.Children.Add(MakeButton("Uninstall", () => dialog.Close(true)));
+        buttons.Children.Add(MakeButton(confirmLabel, () => dialog.Close(true)));
         ((StackPanel)dialog.Content!).Children.Add(buttons);
         return await dialog.ShowDialog<bool>(this);
     }

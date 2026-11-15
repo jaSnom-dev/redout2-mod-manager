@@ -2,7 +2,7 @@
 
 This experimental Avalonia desktop port manages Redout 2 PAK mods on Linux. It is separate from the Windows Forms application.
 
-The integration checks and a window-startup smoke test passed on Ubuntu 24.04 under WSL with a virtual display. The port has not been tested in-game or on a full Linux desktop; macOS and other Unix platforms have not been tested.
+The earlier Linux release passed integration checks and a window-startup smoke test on Ubuntu 24.04 under WSL with a virtual display. The v1.1 changes have not yet been tested on Linux or in-game; macOS and other Unix platforms have not been tested.
 
 ## Requirements
 
@@ -51,10 +51,11 @@ Copy the entire `Unix\publish-linux-x64` directory to Linux before running it.
 1. Start the manager. It searches standard Steam and Flatpak Steam locations and their registered libraries for Redout 2. If detection fails, use **Browse...** to select the game installation, `Content`, or `Content/Paks` folder.
 2. Use **Import Mods...** or drag PAKs and ZIP archives onto the window. Existing PAKs in the game folder can also be registered this way. Only import files you know are mods; game files are not registered automatically.
 3. Check or uncheck mods and select **Apply Changes**. Disabling renames managed PAKs and matching signatures with a `.disabled` suffix; enabling restores their names. Verify with a harmless mod in-game that the game ignores disabled files.
-4. Select **Scan PAKs** to inspect managed PAK indexes for potential conflicts. Select **Details** on a mod to see the overlapping paths. Scans report errors for unsupported or encrypted archives; they do not extract PAK contents.
-5. Use **Refresh Mod List** to update statuses, **Mod Folder** to open the Paks folder, or **Uninstall** to delete a registered mod's managed PAK and signature.
+4. Select **Scan PAKs** to inspect managed PAK indexes for potential conflicts. The conflict column names each overlapping archive and shows its count. **Details** shows the paths for a mod; **Conflict List** opens a copyable report of all overlaps and unscanned archives. Scans report errors for unsupported or encrypted archives; they do not extract PAK contents.
+5. Select a mod using its round selection control and use **Move Up** or **Move Down** to stage its position. Select **Apply Load Order** and confirm to rename registered PAKs and their matching signatures with `001_`, `002_`, and subsequent prefixes. The checkboxes and **Apply Changes** control enabled state separately. The staged order is discarded when closing the manager or selecting another installation.
+6. Use **Refresh Mod List** to update statuses, **Mod Folder** to open the Paks folder, or **Uninstall** to delete a registered mod's managed PAK and signature.
 
-The manager also supports optional `.pak.list` files. Conflict results compare enabled, managed mods only; they do not prove an in-game conflict or determine load order. See [potential asset conflicts](../README.md#potential-asset-conflicts) for the list format and scanner limits.
+The manager also supports optional `.pak.list` files. Conflict results compare enabled, managed mods only; they do not prove an in-game conflict or determine load order. Numbered filenames are an ordering aid: Redout 2's actual load precedence is unverified, so test with harmless mods before relying on it. Reordering supports up to 999 mods, refuses collisions, and leaves external sources and `.pak.list` sidecars unchanged. It changes managed filenames, which may affect tools or mods that refer to the old names. See [potential asset conflicts](../README.md#potential-asset-conflicts) for the list format and scanner limits.
 
 ## Settings and existing Windows mods
 

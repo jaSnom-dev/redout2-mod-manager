@@ -229,7 +229,119 @@ internal sealed partial class ModManager
         SaveManifest();
     }
 
-    public IReadOnlyList<ModRow> GetRows()
+    public Dictionary<string, string> ApplyLoadOrder(IReadOnlyList<string> orderedNames)
+    {
+        RequireGame();
+        if (orderedNames.Count != _mods.Count || orderedNames.Count > 999)
+            throw new InvalidOperationException("Reordering requires the complete mod list and supports at most 999 mods.");
+        var modsByName = _mods.ToDictionary(mod => mod.FileName, StringComparer.OrdinalIgnoreCase);
+        if (orderedNames.Distinct(StringComparer.OrdinalIgnoreCase).Count() != _mods.Count ||
+            orderedNames.Any(name => !modsByName.ContainsKey(name)))
+            throw new InvalidOperationException("The mod list changed; refresh it before changing order.");
+
+        var changes = orderedNames.Select((name, index) =>
+        {
+            var mod = modsByName[name];
+            var newName = $"{index + 1:D3}_{Regex.Replace(mod.FileName, @"^\d{3}_", "")}";
+            if (!IsSafePakFileName(newName))
+                throw new InvalidDataException($"Invalid reordered PAK name: {newName}");
+            return (Mod: mod, OldName: mod.FileName, OldDisplay: mod.DisplayName, NewName: newName);
+        }).ToList();
+        if (changes.Select(change => change.NewName).Distinct(StringComparer.OrdinalIgnoreCase).Count() != changes.Count)
+            throw new IOException("The reordered mods would have duplicate filenames.");
+
+        var pathComparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var sourcePaths = new HashSet<string>(pathComparer);
+        var files = new List<LoadOrderFile>();
+        void AddFile(string source, string destination)
+        {
+            if (!sourcePaths.Add(source))
+                throw new IOException($"Multiple mods refer to the same file: {source}");
+            files.Add(new LoadOrderFile(source, destination));
+        }
+
+        foreach (var change in changes)
+        {
+            var oldPaks = GetLoadOrderPaths(change.OldName);
+            var newPaks = GetLoadOrderPaths(change.NewName);
+            var present = Enumerable.Range(0, oldPaks.Length).Where(index => File.Exists(oldPaks[index])).ToArray();
+            if (present.Length != 1)
+                throw new IOException($"Cannot determine the state of '{change.OldName}'; resolve missing or duplicate files first.");
+            AddFile(oldPaks[present[0]], newPaks[present[0]]);
+            if (change.Mod.HasSignature)
+            {
+                var oldSignatures = GetLoadOrderPaths(Path.ChangeExtension(change.OldName, ".sig"));
+                var newSignatures = GetLoadOrderPaths(Path.ChangeExtension(change.NewName, ".sig"));
+                if (!File.Exists(oldSignatures[present[0]]) ||
+                    oldSignatures.Where((_, index) => index != present[0]).Any(File.Exists))
+                    throw new IOException($"The matching signature for '{change.OldName}' is missing or has conflicting copies.");
+                AddFile(oldSignatures[present[0]], newSignatures[present[0]]);
+            }
+            else if (GetLoadOrderPaths(Path.ChangeExtension(change.OldName, ".sig")).Any(File.Exists))
+                throw new IOException($"An unregistered signature exists for '{change.OldName}'; resolve it before reordering.");
+        }
+        foreach (var change in changes)
+        {
+            foreach (var target in GetLoadOrderPaths(change.NewName)
+                .Concat(GetLoadOrderPaths(Path.ChangeExtension(change.NewName, ".sig"))))
+            {
+                if ((File.Exists(target) || Directory.Exists(target)) && !sourcePaths.Contains(target))
+                    throw new IOException($"Refusing to overwrite an existing file or folder: {target}");
+            }
+        }
+
+        var moving = files.Where(file => !file.Source.Equals(file.Destination, FilePathComparison)).ToList();
+        try
+        {
+            foreach (var file in moving)
+            {
+                File.Move(file.Source, file.Temporary);
+                file.Current = file.Temporary;
+            }
+            foreach (var file in moving)
+            {
+                File.Move(file.Temporary, file.Destination);
+                file.Current = file.Destination;
+            }
+            foreach (var change in changes)
+            {
+                change.Mod.FileName = change.NewName;
+                change.Mod.DisplayName = Path.GetFileNameWithoutExtension(change.NewName);
+            }
+            SaveManifest();
+        }
+        catch (Exception operationError)
+        {
+            foreach (var change in changes)
+            {
+                change.Mod.FileName = change.OldName;
+                change.Mod.DisplayName = change.OldDisplay;
+            }
+            var rollbackErrors = new List<Exception>();
+            foreach (var file in moving.Where(file => file.Current == file.Destination).Reverse())
+            {
+                try { File.Move(file.Destination, file.Temporary); file.Current = file.Temporary; }
+                catch (Exception ex) { rollbackErrors.Add(ex); }
+            }
+            foreach (var file in moving.Where(file => file.Current == file.Temporary).Reverse())
+            {
+                try { File.Move(file.Temporary, file.Source); file.Current = file.Source; }
+                catch (Exception ex) { rollbackErrors.Add(ex); }
+            }
+            if (rollbackErrors.Count > 0)
+            {
+                rollbackErrors.Insert(0, operationError);
+                throw new AggregateException("Changing the mod order failed and rollback was incomplete.", rollbackErrors);
+            }
+            throw;
+        }
+        return changes.ToDictionary(change => change.OldName, change => change.NewName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private string[] GetLoadOrderPaths(string name) =>
+        [Path.Combine(_paksDirectory, name), GetDisabledPath(name), GetLegacyDisabledPath(name)];
+
+    private Dictionary<string, List<ModEntry>> GetAssetOwners()
     {
         var owners = new Dictionary<string, List<ModEntry>>(StringComparer.OrdinalIgnoreCase);
         foreach (var mod in _mods.Where(m => File.Exists(Path.Combine(_paksDirectory, m.FileName))))
@@ -243,6 +355,12 @@ internal sealed partial class ModManager
                 list.Add(mod);
             }
         }
+        return owners;
+    }
+
+    public IReadOnlyList<ModRow> GetRows()
+    {
+        var owners = GetAssetOwners();
         return _mods.OrderBy(m => m.DisplayName, StringComparer.OrdinalIgnoreCase).Select(mod =>
         {
             var active = File.Exists(Path.Combine(_paksDirectory, mod.FileName));
@@ -258,17 +376,71 @@ internal sealed partial class ModManager
             var hasPaths = TryGetPaths(mod, out var paths);
             var overlaps = active && hasPaths
                 ? paths.Where(p => owners.TryGetValue(p, out var list) && list.Count > 1)
-                    .Select(p => $"{p} (also in {string.Join(", ", owners[p].Where(m => m != mod).Select(m => m.DisplayName))})")
+                    .Select(p => (Path: p, Others: owners[p].Where(m => m != mod)
+                        .Select(m => m.FileName).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList()))
                     .ToList()
                 : [];
+            var counts = overlaps.SelectMany(overlap => overlap.Others)
+                .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(group => $"{group.Count()} file(s) with {group.Key}");
             var conflicts = !hasPaths ? "Not scanned" : !active ? "Inactive" :
-                paths.Count == 0 ? "No assets" : overlaps.Count == 0 ? "None" : $"{overlaps.Count} asset(s)";
+                paths.Count == 0 ? "No assets" : overlaps.Count == 0 ? "None" : string.Join("; ", counts);
             var details = !hasPaths ? "No asset paths are available. Scan the PAK or provide a .pak.list file." :
                 !active ? "This mod is disabled and excluded from conflict detection." :
                 overlaps.Count == 0 ? "No known overlaps with enabled, managed mods." :
-                string.Join(Environment.NewLine, overlaps);
-            return new ModRow(mod.FileName, mod.DisplayName, active, status, conflicts, details);
+                string.Join(Environment.NewLine, overlaps.Select(overlap =>
+                    $"{overlap.Path} (also in {string.Join(", ", overlap.Others)})"));
+            return new ModRow(mod.FileName, mod.DisplayName, active, status, conflicts, details, overlaps.Count > 0);
         }).ToList();
+    }
+
+    public string BuildConflictList()
+    {
+        RequireGame();
+        var owners = GetAssetOwners();
+        var report = new StringBuilder();
+        report.AppendLine("Potential overlaps between enabled, managed archives.");
+        report.AppendLine("This reflects applied file states, not pending checkbox changes. Load order is not inferred.");
+        report.AppendLine();
+        var conflicts = owners.Where(pair => pair.Value.Count > 1)
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase).ToList();
+        if (conflicts.Count == 0)
+            report.AppendLine("No known asset-path overlaps.");
+        else
+        {
+            var byArchive = new Dictionary<ModEntry, List<KeyValuePair<string, List<ModEntry>>>>();
+            foreach (var entry in conflicts)
+            {
+                foreach (var owner in entry.Value)
+                {
+                    if (!byArchive.TryGetValue(owner, out var entries))
+                        byArchive.Add(owner, entries = []);
+                    entries.Add(entry);
+                }
+            }
+            foreach (var (mod, entries) in byArchive.OrderBy(pair => pair.Key.FileName, StringComparer.OrdinalIgnoreCase))
+            {
+                report.AppendLine($"Archive: {mod.FileName}");
+                foreach (var entry in entries)
+                {
+                    var others = entry.Value.Where(other => other != mod).Select(other => other.FileName)
+                        .OrderBy(name => name, StringComparer.OrdinalIgnoreCase);
+                    report.AppendLine($"  {entry.Key}");
+                    report.AppendLine($"    Conflicts with: {string.Join(", ", others)}");
+                }
+                report.AppendLine();
+            }
+        }
+        var unscanned = _mods.Where(mod => File.Exists(Path.Combine(_paksDirectory, mod.FileName)) &&
+                !TryGetPaths(mod, out _)).Select(mod => mod.FileName)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
+        if (unscanned.Count > 0)
+        {
+            report.AppendLine("Not scanned (conflicts are unknown):");
+            foreach (var name in unscanned) report.AppendLine($"  {name}");
+        }
+        return report.ToString();
     }
 
     private bool TryGetPaths(ModEntry mod, out IReadOnlyList<string> paths)
@@ -376,6 +548,13 @@ internal sealed partial class ModManager
         public long ScannedPakLength { get; set; }
         public long ScannedPakLastWriteTimeUtcTicks { get; set; }
     }
+    private sealed class LoadOrderFile(string source, string destination)
+    {
+        public string Source { get; } = source;
+        public string Destination { get; } = destination;
+        public string Temporary { get; } = Path.Combine(Path.GetDirectoryName(source)!, $".redout2-order-{Guid.NewGuid():N}.tmp");
+        public string Current { get; set; } = source;
+    }
 }
 
-internal sealed record ModRow(string FileName, string DisplayName, bool Enabled, string Status, string Conflicts, string Details);
+internal sealed record ModRow(string FileName, string DisplayName, bool Enabled, string Status, string Conflicts, string Details, bool HasConflicts);
