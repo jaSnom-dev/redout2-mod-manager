@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Redout2ModManager</AssemblyName>
-    <Version>1.1.2</Version>
+    <Version>1.1.3</Version>
     <RootNamespace>Redout2ModManager</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
@@ -30,11 +30,11 @@
     <PackageReference Include="Oodle.NET" Version="2.2.0" ExcludeAssets="all" />
     <PackageReference Include="OodleSharp" Version="0.0.1" ExcludeAssets="all" />
     <PackageReference Include="Zlib-ng.NET" Version="1.2.0" ExcludeAssets="all" />
-    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" ExcludeAssets="all" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
     <PackageReference Include="Berrysoft.XXTea" Version="4.0.9" ExcludeAssets="all" />
     <PackageReference Include="Blake3" Version="3.0.2" ExcludeAssets="all" />
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" ExcludeAssets="all" />
-    <PackageReference Include="Serilog" Version="4.3.1" ExcludeAssets="all" />
+    <PackageReference Include="Serilog" Version="4.3.1" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" ExcludeAssets="all" />
     <PackageReference Include="System.IO.Hashing" Version="10.0.8" ExcludeAssets="all" />
     <EmbeddedResource Include="Assets\nexus-mods.png" LogicalName="Redout2ModManager.Assets.nexus-mods.png" />
@@ -43,4 +43,3 @@
     <EmbeddedResource Include="Assets\discord-icon.png" LogicalName="Redout2ModManager.Assets.discord-icon.png" />
   </ItemGroup>
 </Project>
-
